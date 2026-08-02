@@ -1,0 +1,6 @@
+.env
+.venv
+pyproject.toml
+uv.lock
+test_env.py
+.idea
