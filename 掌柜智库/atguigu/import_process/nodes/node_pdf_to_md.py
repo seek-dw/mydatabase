@@ -31,9 +31,10 @@ class NodePDFToMD(NodeBase):
             logger.error("路径不存在")
             raise Exception("请提供正确的本地目录")
         local_dir_obj = Path(local_dir)
+        #exists()既可以判断文件也可以判断目录是否存在
+        #stem,suffix本质只是字符串的分割
         if not local_dir_obj.exists():
-            logger.error("路径错误")
-            raise Exception("请提供正确的本地目录")
+            local_dir_obj.mkdir(parents=True,exist_ok= True)
 
         # 1.直接向解析PDF文件的服务器发请求(具体请求格式要对接官方文档),做出判断,拿到回执response
         import requests

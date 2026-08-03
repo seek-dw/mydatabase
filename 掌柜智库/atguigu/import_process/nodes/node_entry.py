@@ -32,6 +32,10 @@ class NodeEntry(NodeBase):
             logger.error("上传路径错误")
             raise Exception("该路径不存在,请提供正确路径")
 
+        if not local_file_path_obj.is_file():
+            logger.error("上传路径错误")
+            raise Exception("该路径不是文件,请提供正确路径")
+
         #防御性编程完成
         #有了真实存在的路径,判断该路径下的文件是什么文件
         #拿到文件名和后缀
