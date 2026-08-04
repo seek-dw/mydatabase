@@ -17,3 +17,14 @@ class ModelConfig:
     qwen3vl_model_name = os.getenv("VL_DEFULT_MODEL")
     qwen3vl_model_temperature = os.getenv("LLM_DEFULT_TEMPERATURE")
     qwen3_flash_model = os.getenv("QWEN3_FLASH_MODEL")
+
+class MinioConfig:
+    MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
+    # 访问密钥
+    MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
+    # 私有密钥
+    MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
+    # 存储桶名称
+    MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME")
+
+    MINIO_IMG_DIR = os.getenv("MINIO_IMG_DIR")

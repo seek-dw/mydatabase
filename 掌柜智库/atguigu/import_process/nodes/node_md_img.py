@@ -1,4 +1,4 @@
-# atguigu/import_process/nodes/node_md_img.py
+# atguigu/import_process/nodes/node_md_img3.py
 import base64
 import os
 import re
@@ -7,17 +7,21 @@ from collections import deque
 from pathlib import Path
 
 from langchain.chat_models import init_chat_model
+from minio.deleteobjects import DeleteObject
 
-from atguigu.config.config import ModelConfig
+from atguigu.config.config import ModelConfig, MinioConfig
 from atguigu.import_process.base import NodeBase
 from atguigu.import_process.state import ImportGraphState
 from atguigu.tool.logger import logger
+from atguigu.tool.minio_client_tool import create_minio_client
 
 
 class NodeMDImg(NodeBase):
     """
     经过pdf_to_md节点后,该节点处理md文件中的图片,将图片转化为带有'摘要','urls'的格式
     #已知 md_path,md_content
+    #目的:拿到图片的摘要
+    #关键要素:图片附近上下文(per_content、follow_content)、图片的内容(base64_str)
     1.拿到md文件内容并创造图片存放目录和所有图片文件列表
         1.防御
         2.文件读写流读出内容 (防御)
@@ -30,6 +34,10 @@ class NodeMDImg(NodeBase):
         1.准备视觉大模型
         2.利用滑动窗口算法规避大模型的限频
         3.调用大模型(因为是视觉大模型,提示词官网找)
+    4.获得url并将全文内容替换并备份
+        1.构建上传目录,构建客户端获取工具获取客户端,对上传目录幂等性删除
+        2.上传图片,拼接url,构造新的带有url列表
+        3.遍历该列表,使用正则替换摘要和url,备份为新文件
     """
 
     name = "node_md_img"
@@ -48,6 +56,7 @@ class NodeMDImg(NodeBase):
             raise Exception("请提供正确的md文件路径")
 
     #2.读取文件内容
+        #with open()后面既可以接path对象,也可以接字符串路径
         with open(md_path_obj, "r", encoding="utf-8") as f:
             md_content = f.read()
         #防御
@@ -66,6 +75,7 @@ class NodeMDImg(NodeBase):
             logger.error("图片目录不存在")
             raise Exception("请提供图片目录")
         #列出该目录下所有文件,os.listdir()遍历该目录下的所有文件,遍历出来后返回的娥是一个列表
+        #os.listdir传递path对象或者是字符串都可以,但是返回的就是一个字符串列表
         image_name_list = os.listdir(images_dir_path_obj)
         # print(image_name_list)
         #如果没有图片,不需要处理图片,直接返回md文件内容
@@ -86,6 +96,11 @@ class NodeMDImg(NodeBase):
                 logger.warning("图片格式错误")
                 continue
             #图片格式符合要求,进行正则匹配
+            """
+            匹配 Markdown 图片引用格式 ![描述](路径)，定位图片在文档中的位置。
+            使用非贪婪匹配避免跨越多个图片引用，使用 re.escape 转义图片名中的特殊字符，
+            通过 match.span() 获取图片索引，用于截取图片上下文辅助视觉模型生成摘要。
+            """
             pattern = re.compile(r"!\[.*?\]\(.*?" + re.escape(image_name) + r"\)")
             #match返回要给对象,对象中包含了span跨度索引
             match = pattern.search(md_content)
@@ -101,6 +116,7 @@ class NodeMDImg(NodeBase):
             follow_context = md_content[end:min(len(md_content),end+length)]
 
             # 拿到每个图片的路径
+            # 此处的image_name是字符串, / 的左边必须是Path对象,右边可以任意拼接
             image_single_path = images_dir_path_obj / image_name
 
             #图片的内容
@@ -144,7 +160,11 @@ class NodeMDImg(NodeBase):
             if dq and len(dq) == dq.maxlen:
                 #current_time-dq[0]代表dq[0]离现在已经过去多长时间
                 #60-(current_time - dq[0])代表距离规定单位时间还剩多少时间,就是需要等待的时间
-                time.sleep(60-(current_time - dq[0]))
+                need_wait_time = max(
+                    0,
+                    60 - (current_time - dq[0])
+                )
+                time.sleep(need_wait_time)
                 #睡眠完成,重置现在时间
                 current_time = time.time()
                 #等待时间已到,再次判断,这次应该是大于60了,所以清除旧记录,更新新的记录
@@ -190,14 +210,83 @@ class NodeMDImg(NodeBase):
                     "summary":res.content
                 }
             )
-        return image_with_summary_list
+
+    # 6.获得url地址
+        #构造一个minio的上传图片存储路径
+        upload_dir = MinioConfig.MINIO_IMG_DIR
+        #获取minio客户端
+        minio_client = create_minio_client()
+
+        #幂等性删除,上传新数据之前先删除旧数据
+        #先列出目录下面的老数据,返回的是一个生成器对象,遍历出来之后是一个个的object对象,只找前缀为upload_dir的对象
+        old_image_list = minio_client.list_objects(
+            bucket_name = MinioConfig.MINIO_BUCKET_NAME,
+            prefix = upload_dir,
+            recursive = True)
+
+        #然后删除旧数据.返回一个生成器对象
+        errors = minio_client.remove_objects(
+            bucket_name = MinioConfig.MINIO_BUCKET_NAME,
+            #删除数据只支持delete_object类型,所以要转一下类型
+            delete_object_list= [DeleteObject(obj.object_name) for obj in old_image_list]
+        )
+        #真正执行删除
+        for error in errors:
+            logger.error( error)
+
+        #准备上传图片
+
+        image_with_summary_and_url_list=[]
+        for image_with_summary in image_with_summary_list:
+            minio_client.fput_object(
+                bucket_name = MinioConfig.MINIO_BUCKET_NAME,
+                object_name = upload_dir + "/"+image_with_summary.get("image_name"),
+                file_path = image_with_summary.get("image_single_path")
+            )
+
+        #获取url地址
+            url = f"http://{MinioConfig.MINIO_ENDPOINT}/{MinioConfig.MINIO_BUCKET_NAME}/{upload_dir}/{image_with_summary.get('image_name')}"
+            image_with_summary_and_url_list.append(
+                {
+                    **image_with_summary,
+                    "url":url
+                }
+            )
+
+
+        #url+摘要都已经获取,现在替换原md文件中的 图片并重命名备份文件
+        #使用正则匹配到每一站图片然后进行替换
+        for image_with_summary_and_url in image_with_summary_and_url_list:
+            pattern = re.compile(r"!\[.*?\]\(.*?" + re.escape(image_with_summary_and_url.get("image_name")) + r"\)")
+            #pattern.sub(新内容,要替换的原文),pattern中自带匹配条件
+            md_content = pattern.sub(
+                f"![{image_with_summary_and_url.get('summary')}]({image_with_summary_and_url.get('url')})",
+                md_content
+            )
+            #备份新的md文件
+            new_md_path_obj = md_path_obj.parent / (md_path_obj.stem + "_backup.md")
+            with open(new_md_path_obj, "w", encoding="utf-8") as f:
+                f.write(md_content)
+                logger.info(f"{md_path_obj}备份成功,备份文件路径为:{new_md_path_obj}")
+
+        return {"md_content":md_content}
 
 
 
 if __name__ == '__main__':
     node = NodeMDImg()
-    init_state = {
-        "md_path": r"C:\Users\Administrator\Desktop\gitee\my_project\hak180产品安全手册\hak180产品安全手册.md"
-    }
-    res =node(init_state)
-    logger.info(res)
+    pdf_list = [
+        r"C:\Users\Administrator\Desktop\gitee\my_project\hak180产品安全手册\hak180产品安全手册.md",
+        r"C:\Users\Administrator\Desktop\gitee\my_project\万用表RS-12的使用\万用表RS-12的使用.md"
+    ]
+    results = []  # 收集所有文件的结果
+    for pdf_path in pdf_list:
+        state = {
+            "md_path": pdf_path,
+        }
+        res = node(state)
+        results.append(res)
+    # ============ 汇总 ============
+    logger.info(f"共 {len(pdf_list)} 个文件，成功 {len(results)} 个")
+    for r in results:
+        logger.info(r)
