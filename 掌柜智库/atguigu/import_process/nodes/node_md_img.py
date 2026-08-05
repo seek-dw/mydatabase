@@ -18,10 +18,13 @@ from atguigu.tool.minio_client_tool import create_minio_client
 
 class NodeMDImg(NodeBase):
     """
-    经过pdf_to_md节点后,该节点处理md文件中的图片,将图片转化为带有'摘要','urls'的格式
-    #已知 md_path,md_content
-    #目的:拿到图片的摘要
+    上一个节点拿到了md_path 和 md_content将pdf转化为md
+    这一节主要处理一下md文件中的图片,目的获得图片的摘要和url替换原图
+        摘要是给模型看的,防止后续rag检索丢失图片信息
+        url是给前端用的,检索到相关内容前端可以直接拿到url返回原图
+
     #关键要素:图片附近上下文(per_content、follow_content)、图片的内容(base64_str)
+
     1.拿到md文件内容并创造图片存放目录和所有图片文件列表
         1.防御
         2.文件读写流读出内容 (防御)

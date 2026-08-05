@@ -128,7 +128,11 @@ class NodePDFToMD(NodeBase):
 
     def download_and_unzip(self, state: ImportGraphState, md_zip_urls, pdf_path_obj, local_dir_obj):
         # 1.下载:get请求得到的zip_urls资源地址,获得压缩内容,通过文件操作,写入某个文件
-
+        # 第一次面对未知响应的时候可以选用一下4种进行测探,第二种最重要,判断返回类型,一般是json需要进行结果解析,如果是zip一般直接content读取二进制内容
+        # #print(md_zip.status_code)  # 请求是否成功
+        # print(md_zip.headers.get("Content-Type"))  # 最关键：返回类型
+        # print(md_zip.headers.get("Content-Disposition"))  # 常含下载文件名
+        # print(md_zip.content[:16])  # 只看前 16 个字节
         import requests
 
         zip_res = requests.get(md_zip_urls, timeout=10)

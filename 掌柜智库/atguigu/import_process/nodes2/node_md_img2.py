@@ -6,11 +6,13 @@ from collections import deque
 from pathlib import Path
 
 from langchain.chat_models import init_chat_model
+from minio.deleteobjects import DeleteObject
 
-from atguigu.config.config import ModelConfig
+from atguigu.config.config import ModelConfig, MinioConfig
 from atguigu.import_process.base import NodeBase
 from atguigu.import_process.state import ImportGraphState
 from atguigu.tool.logger import logger
+from atguigu.tool.minio_client_tool import create_minio_client
 
 
 class NodeMDImg(NodeBase):
@@ -82,7 +84,8 @@ class NodeMDImg(NodeBase):
                     "pre_text": pre_text,
                     "follow_text": follow_text,
                     "image_base64_str": every_image_base64_str,
-                    "single_image_path": single_image_path
+                    "single_image_path": single_image_path,
+                    "image_name": image_name,
                 }
             )
         md_summary_list=[]
@@ -109,7 +112,7 @@ class NodeMDImg(NodeBase):
                             "type": "image_url",
                             "image_url": {
                                 # 这个格式就是base64在使用的时候的规定
-                                "url": "data:image/jpeg;base64," + every_image_base64_str,
+                                "url": "data:image/jpeg;base64," + image_context_str.get("image_base64_str"),
                             },
                         },
                         {"type": "text", "text": f"""
@@ -134,12 +137,47 @@ class NodeMDImg(NodeBase):
             md_summary_list.append(
                 {
                     "summary":res.content,
-                    "single_image_path":single_image_path,
-                    "image_name":image_name
+                    "single_image_path":image_context_str.get("single_image_path"),
+                    "image_name": image_context_str.get("image_name"),
+                }
+            )
+        upload_dir = "upload-images"
+        minio_client = create_minio_client()
+        old_image_list = minio_client.list_objects(bucket_name=MinioConfig.MINIO_BUCKET_NAME, prefix=upload_dir, recursive=True)
+        errors = minio_client.remove_objects(bucket_name=MinioConfig.MINIO_BUCKET_NAME, delete_object_list=[DeleteObject(old_image.object_name) for old_image in old_image_list])
+        for error in errors:
+            logger.error(error)
+        image_with_summary_and_url_list=[]
+        for md_summary in md_summary_list:
+            minio_client.fput_object(
+                bucket_name=MinioConfig.MINIO_BUCKET_NAME,
+                object_name=upload_dir+ "/" + md_summary.get("image_name"),
+                file_path=md_summary.get("single_image_path"),
+            )
+            url = f"http://{MinioConfig.MINIO_ENDPOINT}/{MinioConfig.MINIO_BUCKET_NAME}/{upload_dir}/{md_summary.get('image_name')}"
+            image_with_summary_and_url_list.append(
+                {
+                    **md_summary,
+                    "url":url
                 }
             )
 
-        return md_summary_list
+        for image_with_summary_and_url in image_with_summary_and_url_list:
+            pattern = re.compile(r"!\[.*?\]\(.*?" + re.escape(image_with_summary_and_url.get("image_name")) + r"\)")
+            md_content = pattern.sub(
+                f"![{image_with_summary_and_url.get('summary')}]({image_with_summary_and_url.get('url')})",
+                md_content
+            )
+        new_md_path = md_path_obj.parent / (md_path_obj.stem+"_backup.md")
+        with open(new_md_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        return {
+            "md_content":md_content
+        }
+
+
+
+
 
 
 
