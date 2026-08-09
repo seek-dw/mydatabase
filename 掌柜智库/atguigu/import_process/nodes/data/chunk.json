@@ -1,0 +1,242 @@
+[
+    {
+        "title": "自定义标题",
+        "content": "[TOC]\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "# 掌柜智库 - 【导入】文档切片节点 ",
+        "content": "# 掌柜智库 - 【导入】文档切片节点 \n\n> 本文档详细介绍知识库导入流程的文档切片节点 \n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "## 1. 任务目标",
+        "content": "## 1. 任务目标\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "### 1.1 涉及模块 ",
+        "content": "### 1.1 涉及模块 \n\n```\nprocessor/import_processor/nodes/\n├── node_document_split.py     \t\t# 文档切片节点\n```\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "### 1.2 节点在流程中的位置",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "### 1.2 节点在流程中的位置\n\n```mermaid\nflowchart LR\n    A[START]\n    B[1.任务分发]\n    C[2.PDF结构化解析]\n    D[3.多模态图片理解]\n    E[4.智能文档切片]\n    F[5.主体识别与标签提取]\n    G[6.混合向量化]\n    H[7.数据持久化]\n    I[END]\n    \n    A-->B\n    B-->|PDF|C\n    B-->|Markdown|D\n    C-->D\n    D-->E\n    E-->F\n    F-->G\n    G-->H\n    H-->I",
+        "part": 1
+    },
+    {
+        "title": "### 1.2 节点在流程中的位置",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "### 1.2 节点在流程中的位置\n\n%% 核心样式设置：圆角 + 配色区分\n    style A fill:#e8f4f8,stroke:#4299e1,stroke-width:2px,rx:20,ry:20\n    style E fill:#ffff00,stroke:#4299e1,stroke-width:2px\n    style I fill:#f0f8fb,stroke:#38b2ac,stroke-width:2px,rx:20,ry:20\n```",
+        "part": 2
+    },
+    {
+        "title": "### 1.3 节点在业务中的意义",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "### 1.3 节点在业务中的意义\n\n在 RAG（检索增强生成）系统中，用户上传的文档不能直接丢给 LLM 处理，原因如下：",
+        "part": 1
+    },
+    {
+        "title": "### 1.3 节点在业务中的意义",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "### 1.3 节点在业务中的意义\n\n| 问题             | 说明                                                         |\n| ---------------- | ------------------------------------------------------------ |\n| **Token 限制**   | LLM 的上下文窗口有限，无法一次性处理整篇长文档               |\n| **检索不精确**   | 如果不切分，检索时返回整篇文档，噪声过多，LLM 容易产生幻觉   |",
+        "part": 2
+    },
+    {
+        "title": "### 1.3 节点在业务中的意义",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "### 1.3 节点在业务中的意义\n\n| **向量化成本高** | 整篇文档做 Embedding，计算和存储成本都很高                   |\n| **语义模糊**     | 嵌入模型对短文本的语义表达更精确，长文本的向量表示会\"稀释\"关键信息 |",
+        "part": 3
+    },
+    {
+        "title": "### 1.3 节点在业务中的意义",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "### 1.3 节点在业务中的意义\n\n切分的质量直接决定了后续检索和回答的质量：\n\n- **切分太粗**：检索到的内容噪声多，LLM 回答不精确\n- **切分太细**：上下文碎片化，LLM 无法理解完整语义\n- **切分得当**：每个 chunk 语义完整、长度适中，检索精准、回答质量高\n\n本节点采用 **\"按标题结构切分 + 超长二次切分 + 过短合并\"** 的三层策略，在语义完整性和检索精确度之间取得平衡。",
+        "part": 4
+    },
+    {
+        "title": "## 2. 节点业务流程",
+        "content": "## 2. 节点业务流程\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "### 2.1 节点作用",
+        "content": "### 2.1 节点作用\n\n将长文档转化为适合向量检索的微观语义单元（Chunk）。通过智能切分策略，在保持语义完整性的前提下，控制切片长度，最大化检索的召回率和准确率。\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "### 2.2 实现思路",
+        "content": "### 2.2 实现思路\n\n1.  **结构化优先**：摒弃简单的固定字符数切分，优先依据 Markdown 标题层级（Headers）进行逻辑分块，确保同一知识点的连贯性。\n2.  **递归优化**：对于超长段落，采用“段落 -> 句子”的递归切分策略。先按换行符切，若仍超长则按句号切，确保切片不会在句子中间截断。\n3.  **上下文保留**： 在每个切片中保留 `file_title`）`title` `content` `part`，为后续的 LLM 回答提供丰富的上下文背景。\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "### 2.3 步骤分解",
+        "content": "### 2.3 步骤分解\n\n本节点负责将 Markdown 文本切分为适合检索的 Chunk（片段）。采用“先按标题切分，再按长度优化”的策略。\n\n1.  **获取md的内容和file_title:** 从上一个节点拿到md_path得到文件内容及state得到file_title,进行防护校验并对内容换行统一操作\n2.  **标题初切 **：把内容按照\\n切成行列表，遍历行列表：每个行去除两边空格，进行按照标题合并片段\n3.  **精细切分实现长切短合**：初切片段遍历，不符合条件的片段进行精细切分，符合条件的需要添加part添加到最终列表\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "### 2.4 代码实现",
+        "content": "### 2.4 代码实现\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "#### 2.4.1 单元测试",
+        "content": "#### 2.4.1 单元测试\n\n```python\nif __name__ == '__main__':\n    node = NodeDocumentSplit()\n    init_state = {\n        \"md_path\":r\"D:\\output\\hak180产品安全手册\\hak180产品安全手册_new.md\",\n        \"file_title\":\"hak180产品安全手册\",\n    }\n    result = node(init_state)\n    logger.info(json_format(result))\n```\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "#### 2.4.2 主流程定义 ",
+        "content": "#### 2.4.2 主流程定义 \n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "##### process",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### process\n\n定义 `node_document_split` ，串联各个步骤。",
+        "part": 1
+    },
+    {
+        "title": "##### process",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### process\n\n```python\n    import re\n    from pathlib import Path\n    from langchain_text_splitters import RecursiveCharacterTextSplitter\n    from atguigu.import_process.base import NodeBase\n    from atguigu.import_process.state import ImportGraphState\n    from atguigu.tool.json_format_tool import json_format",
+        "part": 2
+    },
+    {
+        "title": "##### process",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### process\n\nfrom atguigu.tool.logger import logger\n    \n    def process(self, state: ImportGraphState):\n        #获取内容和文件名\n        md_content,file_title = self.get_md_content(state)\n        \n        #对内容进行初切，以标题为标记进行合并片段\n        section_list = self.get_title_section_list(md_content,file_title)",
+        "part": 3
+    },
+    {
+        "title": "##### process",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### process\n\n#对片段内容比较长的进行长切得到最终的chunks\n        final_section_list = self.get_final_section_list(section_list)\n        \n        return {\n            \"chunks\": final_section_list\n        }\n```",
+        "part": 4
+    },
+    {
+        "title": "##### 步骤 1: 获取md的内容和file_title",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 1: 获取md的内容和file_title\n\n从 State 中提取必要的数据，并进行基础清洗。\n\n```python\n    def get_md_content(self,state):\n        md_path = state.get(\"md_path\", \"\")\n        file_title = state.get(\"file_title\", \"\")\n\n        if not md_path:\n            logger.error(\"md_path必须提供\")\n            raise ValueError(\"md_path必须提供\")",
+        "part": 1
+    },
+    {
+        "title": "##### 步骤 1: 获取md的内容和file_title",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 1: 获取md的内容和file_title\n\nmd_path_obj = Path(md_path)\n        if not md_path_obj.exists():\n            logger.error(\"文件不存在\")\n            raise ValueError(\"文件不存在\")\n\n        with open(md_path_obj, \"r\", encoding=\"utf-8\") as f:\n            md_content = f.read()",
+        "part": 2
+    },
+    {
+        "title": "##### 步骤 1: 获取md的内容和file_title",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 1: 获取md的内容和file_title\n\nif not md_content:\n            logger.error(\"文件内容为空\")\n            raise ValueError(\"文件内容为空\")\n            \n        md_content = md_content.replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")\n        \n        return md_content,file_title\n```\n\n**为什么要统一换行符？**\n\n不同操作系统的换行符不同：",
+        "part": 3
+    },
+    {
+        "title": "##### 步骤 1: 获取md的内容和file_title",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 1: 获取md的内容和file_title\n\n| 操作系统             | 换行符 | 说明        |\n| -------------------- | ------ | ----------- |\n| Windows              | `\\r\\n` | 回车 + 换行 |\n| Unix/Linux/Mac（新） | `\\n`   | 换行        |\n| Mac（旧版）          | `\\r`   | 回车        |\n\n如果不统一，后续 `md_content.split(\"\\n\")` 按行切分时会出现问题：",
+        "part": 4
+    },
+    {
+        "title": "##### 步骤 1: 获取md的内容和file_title",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 1: 获取md的内容和file_title\n\n- Windows 的 `\\r\\n` 会导致每行末尾残留 `\\r`\n- 旧版 Mac 的 `\\r` 根本不会被 `\\n` 切开，整篇文档变成一行",
+        "part": 5
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\n基于 Markdown 的标题语法（#）进行第一轮粗略切分。",
+        "part": 1
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\n```python\n    def get_title_section_list(self,md_content,file_title):\n        md_line_list = md_content.split(\"\\n\")\n        block_pattern = r\"^(```{3})|(~~~{3})\"\n        title_pattern = r'^\\s*#{1,6}\\s+.+'\n        is_block = False\n        marker = None\n        section_list = []",
+        "part": 2
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\ncurrent_idx = 0\n        for idx, line in enumerate(md_line_list):\n            line = line.strip()\n            match = re.match(block_pattern, line)\n            if match:\n                if not is_block:\n                    is_block = True\n                    marker = match.group(1)",
+        "part": 3
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\nelse:\n                    if marker == match.group(1):\n                        is_block = False\n                        marker = None",
+        "part": 4
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\nif not is_block and re.match(title_pattern, line):\n                section_content = \"\\n\".join(md_line_list[current_idx:idx])",
+        "part": 5
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\nsection_list.append({\n                    \"content\": section_content,\n                    \"file_title\": file_title,\n                    \"title\": md_line_list[current_idx].strip() if md_line_list[current_idx].startswith(\n                        \"#\") else \"自定义标题\",\n                })",
+        "part": 6
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\ncurrent_idx = idx\n        section_list.append({\n            \"content\": \"\\n\".join(md_line_list[current_idx:]),\n            \"file_title\": file_title,\n            \"title\": md_line_list[current_idx].strip() if md_line_list[current_idx].startswith(\"#\") else \"自定义标题\",\n        })",
+        "part": 7
+    },
+    {
+        "title": "##### 步骤 2: 标题初切",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "##### 步骤 2: 标题初切\n\nreturn section_list\n```",
+        "part": 8
+    },
+    {
+        "title": "###### **关键语法补充说明**",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "###### **关键语法补充说明**\n\n正则中的分组标识 圆括号()\n\n```python\nimport re\n\nstripped_line = \"````123~~~abc```````\"",
+        "part": 1
+    },
+    {
+        "title": "###### **关键语法补充说明**",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "###### **关键语法补充说明**\n\n# 方法2: 保持原有的 match 方式，但更清晰\ncode_block_marker_match = re.match(r'^(`{3,}|~{3,}).*?(`{3,}|~{3,}).*?(`{3,}|~{3,})$', stripped_line)\nif code_block_marker_match:\n    marker1 = code_block_marker_match.group(1)\n    marker2 = code_block_marker_match.group(2)\n    marker3 = code_block_marker_match.group(3)",
+        "part": 2
+    },
+    {
+        "title": "###### **关键语法补充说明**",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "content": "###### **关键语法补充说明**\n\nprint(\"\\n原有方法结果:\")\n    print(f\"标记1: {marker1}\")\n    print(f\"标记2: {marker2}\")\n    print(f\"标记3: {marker3}\")\n```",
+        "part": 3
+    },
+    {
+        "title": "##### 步骤 3: 精细化",
+        "content": "##### 步骤 3: 精细化\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "###### 代码实现",
+        "content": "###### 代码实现\n\n使用RecursiveCharacterTextSplitter，对过长 Chunk 进行二次处理,实现长切短合\n\n```python\n    def get_final_section_list(self, section_list):\n        #       长切\n        max_length = 500\n        overlap = 50\n        final_section_list = []\n        spliter = RecursiveCharacterTextSplitter(\n            separators=[\"\\n\\n\", \"\\n\", \"。\", \"！\", \"？\", \"；\", \".\", \"!\", \"?\", \";\", \" \"],\n            chunk_size=max_length,\n            chunk_overlap=overlap,\n        )\n        for section in section_list:\n            content = section.get(\"content\")\n            title = section.get(\"title\")\n            real_content = (content[len(title):] if content.startswith(\"#\") else content)\n            if len(real_content) <= max_length:\n                final_section_list.append({\n                    **section,\n                    \"part\": 0\n                })\n                continue\n\n            if \"<table\" in content:\n                final_section_list.append({\n                    **section,\n                    \"part\": 0\n                })\n                continue\n\n            splite_section_chunks = spliter.split_text(real_content)\n            for idx, section_chunk in enumerate(splite_section_chunks, start=1):\n                final_section_list.append({\n                    **section,\n                    \"part\": idx,\n                    \"content\": title + \"\\n\\n\" + section_chunk\n                })\n        return final_section_list\n```\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    },
+    {
+        "title": "##### 步骤 5: 备份",
+        "content": "##### 步骤 5: 备份\n\n将结果备份到本地。可以直接创建json文件直接复制粘贴过去，供下个节点使用。后续串联完成后直接从state获取\n",
+        "file_title": "07【掌柜智库】【导入】文档切片",
+        "part": 0
+    }
+]

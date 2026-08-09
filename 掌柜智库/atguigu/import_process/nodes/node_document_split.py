@@ -1,4 +1,4 @@
-# atguigu/import_process/nodes/node_document_split.py
+# atguigu/import_process/nodes/node_document_split2.py
 import json
 import re
 from pathlib import Path
@@ -65,12 +65,14 @@ class NodeDocumentSplit(NodeBase):
         for idx , line in enumerate(md_lines):
             line = line.strip()
             #匹配到了代码块的符号
+            #re.match只会在字符串的开头进行匹配,每行的开头必须匹配正则,否则不匹配
             if re.match(code_pattern, line):
                 logger.info("匹配到了代码块")
                 if not is_in_block:
                     logger.info("进入代码块")
                     is_in_block = True
                     marker = re.match(code_pattern, line).group(1)
+                    print(marker)
                 else:
                     if marker == re.match(code_pattern, line).group(1):
                         logger.info("退出代码块")
@@ -103,13 +105,13 @@ class NodeDocumentSplit(NodeBase):
             chunk_size = 300,
             chunk_overlap = 2
         )
-        final_section_List= []
+        final_section_list= []
         for section in section_list:
             title = section.get("title")
             content = section.get("content")
             real_content = content[len(title):]if content.strip().startswith("#") else  content
             if len(real_content)<=300:
-                final_section_List.append(
+                final_section_list.append(
                     {
                         **section,
                         "part":0
@@ -117,7 +119,7 @@ class NodeDocumentSplit(NodeBase):
                 )
                 continue
             if "<table" in real_content:
-                final_section_List.append(
+                final_section_list.append(
                     {
                         **section,
                         "part": 0
@@ -126,8 +128,8 @@ class NodeDocumentSplit(NodeBase):
                 continue
 
             splite_chunk_list = spliter.split_text(real_content)
-            for idx , splite_chunk in enumerate(splite_chunk_list):
-                final_section_List.append(
+            for idx , splite_chunk in enumerate(splite_chunk_list,start = 1):
+                final_section_list.append(
                     {
                         "title": title,
                         "file_title":file_title,
@@ -135,12 +137,18 @@ class NodeDocumentSplit(NodeBase):
                         "part": idx
                     }
                 )
+        file_json = convert_to_json(final_section_list)
+        with open("data/chunk.json", "w", encoding="utf-8") as f:
+            f.write(file_json)
 
-        return final_section_List
+        return final_section_list
+
+
+
 if __name__ == '__main__':
     node = NodeDocumentSplit()
     init_state={
-        "md_path": r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册\hak180产品安全手册_new.md"
+        "md_path": r"E:\AI大模型\第七阶段 掌柜智库\掌柜智库05\07【掌柜智库】【导入】文档切片.md"
     }
     res = node(init_state)
     logger.info(convert_to_json(res))

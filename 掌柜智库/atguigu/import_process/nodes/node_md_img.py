@@ -199,11 +199,11 @@ class NodeMDImg(NodeBase):
             ]
             if not llm :
                 llm = init_chat_model(
-                    model = ModelConfig.qwen3vl_model_name,
+                    model = ModelConfig.VL_MODEL_NAME,
                     model_provider = "openai",
-                    api_key = ModelConfig.qwen3vl_api_key,
-                    base_url = ModelConfig.qwen3vl_base_url,
-                    temperature = ModelConfig.qwen3vl_model_temperature
+                    api_key = ModelConfig.VL_MODEL_API_KEY,
+                    base_url = ModelConfig.VL_MODEL_BASE_URL,
+                    temperature = ModelConfig.VL_MODEL_TEMPERATURE
                 )
             res = llm.invoke(input = messages)
             image_with_summary_list.append(

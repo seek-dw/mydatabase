@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
@@ -10,15 +12,24 @@ class MinerUConfig:
 
 class ModelConfig:
     """
-    QWEN3ALL 配置类
+    MODEL_VL_AND_LLM 配置类
     """
-    qwen3vl_api_key = os.getenv("QWEN3VL_API_KEY")
-    qwen3vl_base_url = os.getenv("QWEN3VL_BASE_URL")
-    qwen3vl_model_name = os.getenv("VL_DEFULT_MODEL")
-    qwen3vl_model_temperature = os.getenv("LLM_DEFULT_TEMPERATURE")
-    qwen3_flash_model = os.getenv("QWEN3_FLASH_MODEL")
+    #视觉模型api
+    VL_MODEL_API_KEY = os.getenv("VL_MODEL_API_KEY")
+    #视觉模型url
+    VL_MODEL_BASE_URL = os.getenv("VL_MODEL_BASE_URL")
+    #视觉模型名字
+    VL_MODEL_NAME = os.getenv("VL_MODEL_NAME")
+    #视觉模型温度
+    VL_MODEL_TEMPERATURE = os.getenv("VL_MODEL_TEMPERATURE")
+    #语言模型名字
+    LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME")
 
 class MinioConfig:
+    """
+    MINIO配置类
+    """
+
     MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
     # 访问密钥
     MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
@@ -26,5 +37,21 @@ class MinioConfig:
     MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
     # 存储桶名称
     MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME")
-
+    # 图片上传目录
     MINIO_IMG_DIR = os.getenv("MINIO_IMG_DIR")
+
+class EmbeddingConfig:
+    """
+    EMBEDDING_MODEL配置类
+    """
+
+    # 嵌入模型
+    EMBEDDING_MODEL =  os.getenv("EMBEDDING_MODEL")
+    # 向量化设备
+    DEVICE = os.getenv("DEVICE")
+    # 精度训练 这读出来是字符串,所以一定要判断然后变成布尔
+    USE_FP16 = True if os.getenv("USE_FP16") in ["True"] else False
+
+class MilvusConfig:
+    milvus_url = os.getenv("MILVUS_URL")
+    milvus_item_collection = os.getenv("ITEM_COLLECTION")
