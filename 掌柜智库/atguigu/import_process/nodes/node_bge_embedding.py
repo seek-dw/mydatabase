@@ -31,7 +31,7 @@ class NodeBGEEmbedding(NodeBase):
             #拿到批量的chunks
             batch_chunks = chunks[i:i+3]
             #拿到批量chunks内容
-            batch_chunks_content = [chunk["content"] for chunk in batch_chunks]
+            batch_chunks_content = [f"{chunk.get('item_name')} {chunk.get('content')}" for chunk in batch_chunks]
             #向量化批量chunks的内容
             batch_chunk_content_embed = vectorize_texts(batch_chunks_content)
             #取出稠密向量和稀疏向量
@@ -39,7 +39,7 @@ class NodeBGEEmbedding(NodeBase):
                 chunk["dense_vector"] = batch_chunk_content_embed.get("dense")[idx]
                 chunk["sparse_vector"] = batch_chunk_content_embed.get("sparse")[idx]
 
-        with open("./data/chunks_with_vector.json","w",encoding="utf-8") as f:
+        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk_vector.json","w",encoding="utf-8") as f:
             f.write(convert_to_json(chunks))
 
         return{

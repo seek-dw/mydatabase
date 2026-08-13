@@ -72,7 +72,7 @@ class NodeDocumentSplit(NodeBase):
                     logger.info("进入代码块")
                     is_in_block = True
                     marker = re.match(code_pattern, line).group(1)
-                    print(marker)
+                    # print(marker)
                 else:
                     if marker == re.match(code_pattern, line).group(1):
                         logger.info("退出代码块")
@@ -85,6 +85,7 @@ class NodeDocumentSplit(NodeBase):
                 temp_list = md_lines[current_idx:idx]
                 content = "\n".join(temp_list)
                 section_dict = {
+                    #此处一定得是content进行判断,因为startswith只可以被字符串调用,不可以是列表
                     "title":temp_list[0] if content.strip().startswith("#") else "自定义标题",
                     "content":content,
                     "file_title": file_title
@@ -138,10 +139,10 @@ class NodeDocumentSplit(NodeBase):
                     }
                 )
         file_json = convert_to_json(final_section_list)
-        with open("data/chunk.json", "w", encoding="utf-8") as f:
+        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk.json", "w", encoding="utf-8") as f:
             f.write(file_json)
 
-        return final_section_list
+        return {"chunks": final_section_list}
 
 
 

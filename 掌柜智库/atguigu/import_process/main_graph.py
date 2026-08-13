@@ -70,7 +70,8 @@ class MainGraphRunner:
 
 if __name__ == '__main__':
     init_state = {
-        "local_file_path": r"E:\AI大模型\第七阶段 掌柜智库\掌柜智库01\资料\05-设备手册汇总\doc\hak180产品安全手册.pdf"
+        "local_file_path": r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册.pdf",
+        "local_dir" : r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc"
     }
     res = MainGraphRunner.create_runner(init_state)
     logger.info(res)

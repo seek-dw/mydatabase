@@ -182,7 +182,7 @@ class NodeItemNameRecognition(NodeBase):
         for chunk in chunks:
             chunk["item_name"] = item_name
 
-        with open("data/item_chunk.json", "w", encoding="utf-8") as f:
+        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunks_with_item_name.json", "w", encoding="utf-8") as f:
             f.write(json.dumps(chunks,ensure_ascii=False,indent=4))
 
         return {

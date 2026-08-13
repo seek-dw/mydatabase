@@ -279,8 +279,7 @@ class NodeMDImg(NodeBase):
 if __name__ == '__main__':
     node = NodeMDImg()
     pdf_list = [
-        r"C:\Users\Administrator\Desktop\gitee\my_project\hak180产品安全手册\hak180产品安全手册.md",
-        r"C:\Users\Administrator\Desktop\gitee\my_project\万用表RS-12的使用\万用表RS-12的使用.md"
+        r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册\hak180产品安全手册.md"
     ]
     results = []  # 收集所有文件的结果
     for pdf_path in pdf_list:

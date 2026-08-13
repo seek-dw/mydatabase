@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from atguigu.import_process.base import NodeBase
 from atguigu.import_process.state import ImportGraphState
@@ -30,58 +30,51 @@ class NodeDocumentSplit(NodeBase):
     def process(self, state: ImportGraphState):
         md_path = state.get("md_path","")
         if not md_path:
-            logger.error("文件不存在")
-            raise Exception ("文件不存在")
-
+            logger.error("上传路径错误")
+            raise Exception("上传路径错误")
         md_path_obj = Path(md_path)
         if not md_path_obj.exists():
-            logger.error("文件目录错误")
-            raise Exception ("文件目录错误")
+            logger.error("上传路径不存在")
+            raise Exception("上传路径不存在")
 
-        file_title = state.get("file_title","")
+        file_title = state.get("file_title")
         if not file_title:
             file_title = md_path_obj.stem
 
         with open(md_path_obj,"r",encoding="utf-8") as f:
             md_content = f.read()
             if not md_content:
-                logger.error("文件内容为空")
-                raise Exception ("文件内容为空")
-
-        md_content = md_content.replace("\n\r","\n").replace("\r","\n")
+                logger.error('文件内容为空')
+                raise Exception('文件内容为空')
 
         md_lines = md_content.split("\n")
-
-
-        code_pattern = re.compile(r"(`{3,}|~{3,})")
-        title_pattern = re.compile(r"^\s*#{1,6}\s+.+")
-        marker = None
+        code_pattern = r"(^`{3,}|~{3,})"
+        title_pattern = r"^\s*#{1,6}\s+.+"
         is_in_block = False
+        marker = None
         current_idx = 0
-        section_list=[]
-        for idx, line in enumerate(md_lines):
+        section_list = []
+        for idx,line in enumerate(md_lines):
             line.strip()
-            if code_pattern.match(line):
+            if re.match(code_pattern, line):
                 if not is_in_block:
                     is_in_block = True
-                    marker = code_pattern.match(line).group(1)
+                    marker = re.match(code_pattern,line).group()
                 else:
-                    if marker == code_pattern.match(line).group(1):
+                    if marker == re.match(code_pattern,line).group():
                         is_in_block = False
                         marker = None
 
-
-            if not is_in_block and title_pattern.match(line):
+            if not is_in_block and re.match(title_pattern,line):
                 temp_list = md_lines[current_idx:idx]
                 content = "\n".join(temp_list)
                 section_dict = {
-                    "title":temp_list[0] if content.startswith("#") else "无标题",
+                    "title": temp_list[0] if content.startswith("#") else "无标题",
                     "content":content,
                     "file_title":file_title
                 }
                 section_list.append(section_dict)
                 current_idx = idx
-
         section_list.append(
             {
                 "title":md_lines[current_idx],
@@ -90,23 +83,27 @@ class NodeDocumentSplit(NodeBase):
             }
         )
 
-        chunk_size = 300
+
+
+
         spliter = RecursiveCharacterTextSplitter(
-            chunk_size = chunk_size,
+            chunk_size= 300,
             chunk_overlap=10,
-            separators = ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " "]
+            separators=["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " "]
         )
 
+        chunk_size = 300
         final_section_list = []
         for section in section_list:
-            title = section.get("title")
-            content = section.get("content")
+            content = section.get("content","")
+            title = section.get("title","")
             real_content = content[len(title):] if content.startswith("#") else content
-            if len(real_content) < chunk_size:
-                final_section_list.append({
-                    **section,
-                    "part":0
-                }
+            if len(real_content) <= chunk_size:
+                final_section_list.append(
+                    {
+                        **section,
+                        "part":0
+                    }
                 )
                 continue
             if "<table" in real_content:
@@ -117,14 +114,14 @@ class NodeDocumentSplit(NodeBase):
                     }
                 )
                 continue
-            chunks_list = spliter.split_text(real_content)
-            for idx , chunk in enumerate(chunks_list,start = 1):
+            chunks = spliter.split_text(real_content)
+            for idx,chunk in enumerate(chunks,start =1):
                 final_section_list.append(
                     {
-                        "title":section.get("title"),
-                        "content": chunk,
-                        "file_title": file_title,
-                        "part": idx
+                        "title":title,
+                        "content":chunk,
+                        "file_title":file_title,
+                        "part":idx
                     }
                 )
         return final_section_list
@@ -138,3 +135,8 @@ if __name__ == '__main__':
     }
     res = node(init_state)
     logger.info(convert_to_json(res))
+
+
+
+
+

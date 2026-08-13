@@ -53,5 +53,31 @@ class EmbeddingConfig:
     USE_FP16 = True if os.getenv("USE_FP16") in ["True"] else False
 
 class MilvusConfig:
+    """
+    MILVUS配置类
+    """
+    #创建客户端url地址
     milvus_url = os.getenv("MILVUS_URL")
+    #主体识别集合表
     milvus_item_collection = os.getenv("ITEM_COLLECTION")
+    #chunks集合表
+    milvus_chunks_collection = os.getenv("CHUNKS_COLLECTION")
+
+class MongoConfig:
+    """
+    Mongo配置类
+    """
+
+    # mongo的链接地址
+    mongo_url = os.getenv("MONGO_URL")
+    # 数据库名
+    mongo_db_name = os.getenv("MONGO_DB_NAME")
+
+class McpConfig:
+    """
+    Mcp配置类
+    """
+
+    # mcp连接地址
+    mcp_server = os.getenv("MCP_SERVER")
+    mcp_api_key = os.getenv("OPENAI_API_KEY")

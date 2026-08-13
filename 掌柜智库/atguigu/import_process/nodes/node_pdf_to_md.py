@@ -215,7 +215,7 @@ if __name__ == '__main__':
     node = NodePDFToMD()
     init_state = {
         "pdf_path": r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\hak180产品安全手册.pdf",
-        "local_dir" : r"C:\Users\Administrator\Desktop\gitee\my_project"
+        "local_dir" : r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc"
     }
     res = node(init_state)
     logger.info(res)
