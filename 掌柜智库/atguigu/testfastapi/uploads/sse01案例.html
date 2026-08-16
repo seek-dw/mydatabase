@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>"sse01案例"</title>
+</head>
+<body>
+    <h1>"sse01案例"</h1>
+    <!--id 身份证明,用于在脚本中写js代码的时候获得这个标签的内容 -->
+    <button id="btn">点击发送请求</button>
+    <input id="ipt" type="text"><br>
+    <div id="content"></div>
+    <script>
+        const btn = document.getElementById("btn")
+
+        // 以下所有内容都被包含在了这个函数当中,当用户点击按钮发生事件的时候就会触发该函数
+        //  1.进行sse01接口的访问
+        //  2.控制台打印相应数据
+        //  3.订阅sse通道
+        //  4.内置回调函数,就是只有sse通道传递数据的时候才会进行触发
+        //  5.回调函数内部判断结束符号,只要不是None就会一直把sse的输送数据显示到<div><div>当中
+        btn.onclick = async function(){
+            session_id = document.getElementById("ipt").value
+            //访问后端的sse01接口并将session_id以查询参数的形式传入接口
+            res = await fetch("http://localhost:8000/sse01?session_id=" + session_id)
+            //将响应数据反序列化
+            const data = await res.json()
+            console.log(data)
+
+
+        // 订阅sse 通道
+        es = new EventSource("http://localhost:8000/stream?session_id="+session_id)
+        es.onmessage = function(e){
+            if(e.data!=="None"){
+                document.getElementById("content").innerHTML += e.data + "<br>"
+            }else{
+                es.close()
+            }
+        }
+}
+
+    </script>
+
+
+</body>
+</html>

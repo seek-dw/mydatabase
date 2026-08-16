@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>我爱杨幂</title>
+</head>
+<body>
+    <h1>我爱你</h1>
+    <button id="btn">点我发请求</button>
+    <p>我就是爱杨幂</p>
+    <img src="http://localhost:8000/static/ENDFIELD_SHARE_1770646625.png" alt="杨幂">
+
+
+    <script>
+        // <!-- 这是从当前html页面中拿到id="btn"的元素信息并赋值给btn变量-->
+        const btn = document.getElementById('btn')
+        // <!-- 这是给btn变量绑定一个点击事件当btn被点击的时候就会执行function函数-->
+        btn.onclick = async function (){
+            // console.log("我爱杨幂哈哈")
+        //     发请求ajax请求
+            res = await fetch("http://localhost:8000/test_cors")
+            data = await res.json()
+            console.log(data)
+        }
+    </script>
+
+
+</body>
+</html>
