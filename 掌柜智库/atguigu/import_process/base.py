@@ -1,8 +1,11 @@
 """
 实现抽象基类
 """
+import time
 from abc import ABC, abstractmethod
 from atguigu.tool.logger import logger
+from atguigu.tool.task_utils import add_running_task, add_done_task, add_node_duration
+
 
 class NodeBase(ABC):
     #定义类属性name,在初始化方法中强制子类必须重写name属性
@@ -20,8 +23,18 @@ class NodeBase(ABC):
     def __call__(self, state):
         try:
             logger.info(f"节点{self.name}开始执行了")
+
+            task_id = state.get("task_id")
+            add_running_task(task_id, self.name)
+            start_time = time.time()
+
             result = self.process(state)
             logger.info(f"节点{self.name}执行结束了")
+
+            add_done_task(task_id,self.name)
+            end_time = time.time()
+
+            add_node_duration(task_id, self.name, end_time - start_time)
             return result
         except Exception as e:
             logger.error(f"节点{self.name}执行异常了")

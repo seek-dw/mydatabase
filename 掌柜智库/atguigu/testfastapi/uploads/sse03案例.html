@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>sse02案例</title>
+</head>
+<body>
+    <h1>sse02案例</h1>
+    <button id = "btn">点击发送请求</button>
+    <input type="text" id="input" placeholder="请输入内容">
+    <div id="content"></div>
+
+    <script>
+
+        const btn = document.getElementById("btn")
+        btn.onclick = async function(){
+            //函数内容,发送请求sse02接口 开始
+            // fetch附带内容开始
+            const session_id = document.getElementById("input").value
+            res = await fetch("http://localhost:8000/sse03",{
+
+                method:"POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    query:"hello",
+                    session_id:session_id
+                })
+            }) // fetch内容结束
+            data = res.json()
+            console.log(data)
+
+            //sse订阅
+            es = new EventSource("http://localhost:8000/stream/"+session_id)
+
+            // 这是系统事件,由于后端接口使用了自定义事件名称,所以这里要用自定义事件
+            // es.onmessage = function(e){
+            //    if (e.data !== "None"){
+            //        document.getElementById("content").innerHTML+=e.data+"<br/>"
+            //    }else{
+            //        console.log("结束sse")
+            //        es.close()
+            //    }
+            // }
+
+            // 添加dom2方式添加事件,dom1相当于obj.onclick = func1 相当于 obj.callback = func1
+            // 当多个函数被赋予callback属性的时候 obj.callback()之能调用最后被赋值的那个函数
+            // dom2方式就相当于 obj.addEventListener.append(func1),触发它的时候会调用里面所有被添加过的函数
+
+            // 当sse推送的事件是process的时候,执行这个函数,打印数据同时把提送数据显示到div前端页面里面
+
+            // 正在推送数据呢所以不能es.close()
+            es.addEventListener("process",function(e){
+                console.log(e.data)
+                document.getElementById("content").innerHTML+=e.data+"<br/>"
+            })
+            // 推送完毕,结束断开sse,要写es.close()
+            es.addEventListener("final",function(e){
+                console.log(e.data)
+                document.getElementById("content").innerHTML+=e.data+"<br/>"
+                es.close()
+            })
+            es.addEventListener("error",function(e){
+                console.log(e.data)
+                document.getElementById("content").innerHTML+=e.data+"<br/>"
+                es.close()
+            })
+
+
+
+
+
+
+
+
+
+
+        //函数结束
+        }
+    </script>
+</body>
+</html>

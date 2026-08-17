@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>sse02案例</title>
+</head>
+<body>
+    <h1>sse02案例</h1>
+    <button id = "btn">点击发送请求</button>
+    <input type="text" id="input" placeholder="请输入内容">
+    <div id="content"></div>
+
+    <script>
+
+        const btn = document.getElementById("btn")
+        btn.onclick = async function(){
+            //函数内容,发送请求sse02接口 开始
+            // fetch附带内容开始
+            const session_id = document.getElementById("input").value
+            res = await fetch("http://localhost:8000/sse02",{
+
+                method:"POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    query:"hello",
+                    session_id:session_id
+                })
+            }) // fetch内容结束
+            data = res.json()
+            console.log(data)
+
+            //sse订阅
+            es = new EventSource("http://localhost:8000/stream/"+session_id)
+            es.onmessage = function(e){
+               if (e.data !== "None"){
+                   document.getElementById("content").innerHTML+=e.data+"<br/>"
+               }else{
+                   console.log("结束sse")
+                   es.close()
+               }
+            }
+
+
+
+
+
+
+
+
+
+
+
+        //函数结束
+        }
+    </script>
+</body>
+</html>
