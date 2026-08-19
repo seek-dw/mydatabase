@@ -9,6 +9,7 @@ from abc import abstractmethod, ABC
 
 from atguigu.query_process.state import QueryGraphState
 from atguigu.tool.logger import logger
+from atguigu.tool.task_utils import put_data, get_task_info, add_running_task, add_done_task
 
 
 class NodeBase(ABC):
@@ -29,10 +30,16 @@ class NodeBase(ABC):
         try:
             logger.info(f"{self.name} 开始执行...")
 
+            task_id = state.get("task_id")
+            add_running_task(task_id, self.name)
+            put_data(task_id, event="progress", data=get_task_info(task_id))
+
             result = self.process(state)
 
-            logger.info(f"{self.name} 结束执行...")
+            add_done_task(task_id, self.name)
+            put_data(task_id,event="progress",data = get_task_info(task_id))
 
+            logger.info(f"{self.name} 结束执行...")
             return result
         except Exception as e:
             logger.error(f"{self.name} 执行失败: {e}")

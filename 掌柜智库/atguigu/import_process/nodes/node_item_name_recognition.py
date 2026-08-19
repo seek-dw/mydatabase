@@ -69,7 +69,7 @@ class NodeItemNameRecognition(NodeBase):
 
         messages = [
             {"role":"system","content":ITEM_NAME_SYSTEM_PROMPT},
-            {"role":"user","content":ITEM_NAME_USER_PROMPT_TEMPLATE.format(file_title=file_title,content=content_str)}
+            {"role":"user","content":ITEM_NAME_USER_PROMPT_TEMPLATE.format(file_title=file_title,context=content_str)}
         ]
         res = llm.invoke(input = messages)
         print(res.content)
@@ -172,18 +172,12 @@ class NodeItemNameRecognition(NodeBase):
             data = data
         )
 
-        #插入数据
-        milvus_client.insert(
-            collection_name = collection_name,
-            data = []
-        )
-
         #
         for chunk in chunks:
             chunk["item_name"] = item_name
 
-        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunks_with_item_name.json", "w", encoding="utf-8") as f:
-            f.write(json.dumps(chunks,ensure_ascii=False,indent=4))
+        # with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunks_with_item_name.json", "w", encoding="utf-8") as f:
+        #     f.write(json.dumps(chunks,ensure_ascii=False,indent=4))
 
         return {
             "item_name":item_name,

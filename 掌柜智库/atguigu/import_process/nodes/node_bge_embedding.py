@@ -39,8 +39,8 @@ class NodeBGEEmbedding(NodeBase):
                 chunk["dense_vector"] = batch_chunk_content_embed.get("dense")[idx]
                 chunk["sparse_vector"] = batch_chunk_content_embed.get("sparse")[idx]
 
-        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk_vector.json","w",encoding="utf-8") as f:
-            f.write(convert_to_json(chunks))
+        # with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk_vector.json","w",encoding="utf-8") as f:
+        #     f.write(convert_to_json(chunks))
 
         return{
                 "chunks":chunks

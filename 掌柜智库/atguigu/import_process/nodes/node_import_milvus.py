@@ -136,8 +136,8 @@ class NodeImportMilvus(NodeBase):
         for idx,chunk in enumerate(chunks):
             chunk["id"] = ids[idx]
 
-        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk_id.json","w",encoding="utf-8") as f:
-            json.dump(chunks,f,ensure_ascii=False,indent=4)
+        # with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk_id.json","w",encoding="utf-8") as f:
+        #     json.dump(chunks,f,ensure_ascii=False,indent=4)
 
 
         return {

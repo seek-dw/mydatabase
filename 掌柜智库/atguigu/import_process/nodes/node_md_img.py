@@ -75,8 +75,7 @@ class NodeMDImg(NodeBase):
         images_dir_path_obj = md_path_obj.parent / "images"
         #防御
         if not images_dir_path_obj.exists():
-            logger.error("图片目录不存在")
-            raise Exception("请提供图片目录")
+            os.makedirs(images_dir_path_obj)
         #列出该目录下所有文件,os.listdir()遍历该目录下的所有文件,遍历出来后返回的娥是一个列表
         #os.listdir传递path对象或者是字符串都可以,但是返回的就是一个字符串列表
         image_name_list = os.listdir(images_dir_path_obj)
@@ -113,6 +112,7 @@ class NodeMDImg(NodeBase):
                 continue
             #解包
             start, end = match.span()
+            #improve这里可以进行优化?上下文拿取过于随意没有限制了
             #上文
             pre_context = md_content[max(0,start-length):start]
             #下文

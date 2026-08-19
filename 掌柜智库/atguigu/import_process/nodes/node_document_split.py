@@ -138,9 +138,9 @@ class NodeDocumentSplit(NodeBase):
                         "part": idx
                     }
                 )
-        file_json = convert_to_json(final_section_list)
-        with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk.json", "w", encoding="utf-8") as f:
-            f.write(file_json)
+        # file_json = convert_to_json(final_section_list)
+        # with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk.json", "w", encoding="utf-8") as f:
+        #     f.write(file_json)
 
         return {"chunks": final_section_list}
 

@@ -1,6 +1,8 @@
 # atguigu/query_process/nodes/node_web_search_mcp.py
 import json
 
+from sympy import print_rcode
+
 from atguigu.config.config import McpConfig
 from atguigu.query_process.base import NodeBase
 from atguigu.query_process.state import QueryGraphState
@@ -32,7 +34,7 @@ class NodeWebSearchMcp(NodeBase):
 
         #调用mcp
         result = asyncio.run(self.web_search(rewritten_query,10))
-
+        print(result)
         #解析结果
         data = json.loads(result.content[0].text).get("pages")
         return {
@@ -71,6 +73,7 @@ class NodeWebSearchMcp(NodeBase):
             result = await server.call_tool("bailian_web_search",arguments=
                                             {"query":query,
                                              "count":limit})
+
 
         return result
 

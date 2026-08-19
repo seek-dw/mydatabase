@@ -10,11 +10,6 @@ class JsonConverter(json.JSONEncoder):
         return super().default(obj)
 
 
-
-
-
-
-
 def convert_to_json(data):
     #ensure_ascii=False,不会将中文转化unicode码点，而是直接输出中文
     #默认是true原因:

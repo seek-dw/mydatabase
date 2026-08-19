@@ -1,4 +1,6 @@
+import time
 from collections import defaultdict
+from queue import Queue
 from typing import Dict, List
 
 # ---------------------------
@@ -189,3 +191,32 @@ def get_task_info(task_id: str) -> Dict[str, any]:
         "导入向量库": 2.1
     }
 }"""
+
+"""
+1.将队列视作全局变量
+2.从队列中取数据和添加数据的方法都作为一个函数写进该文件
+-----#{方便后续所有的其他模块进行状态流的更新或者删除}#------
+"""
+
+from collections import deque
+
+#定义全局的队列字典,里面会同时更新 {整个节点的流转状态}、{大模型的流式返回答案}
+queue_dict:Dict[str,Queue]= {}
+
+#创建队列
+def create_queue(task_id):
+    if not queue_dict.get(task_id):
+        queue_dict[task_id] = Queue()
+
+#向队列中添加数据
+def put_data(task_id,event,data):
+    while not queue_dict.get(task_id):
+        time.sleep(1)
+    queue_dict.get(task_id).put({"event":event,"data":data})
+
+#向队列中获取数据
+def get_data(task_id,):
+    while not queue_dict.get(task_id):
+        time.sleep(1)
+    return queue_dict.get(task_id).get()
+

@@ -16,6 +16,7 @@ class NodeRerank(NodeBase):
     name: str = "node_rerank"
 
     def process(self, state: QueryGraphState):
+        print("========== 已经进入 process ==========")
         """
         节点逻辑
         :param state: 工作流状态对象
@@ -56,20 +57,20 @@ class NodeRerank(NodeBase):
             for chunk in merge_chunks]
         # print(convert_to_json(merge_chunks))
         # 已经获取到合并的chunk,现在准备重排序模型参数,送入重排序模型
+
         rewritten_query = state.get("rewritten_query","")
-        texts = [chunk.get("content") for chunk in merge_chunks]
+        texts = [chunk.get("content") if chunk.get("content") else "无内容" for chunk in merge_chunks]
         # 送入重排序模型进行重排序
         # query问题 texts相关文档, 输出index:原文档的输入顺序 ,score:问题与原文档的相关性分数
         res = rerank(query = rewritten_query, texts = texts,limit = len(merge_chunks))
-        # print(convert_to_json(res))
+        print(convert_to_json(res))
 
         # 更新原来每个chunk中的分数
-        for i  in res:
-            merge_chunks[i.get("index")]["score"]= i.get("score")
-        # 更新完了之后按分数进行排序
-        # print(convert_to_json(merge_chunks))
 
-        rerank_merge_chunks = sorted(merge_chunks,key = lambda x:x["score"],reverse=True)
+        for i in res:
+            merge_chunks[i.get("index")]["score"]= i.get("score")
+
+        rerank_merge_chunks = sorted(merge_chunks,key = lambda x:x.get("score",""),reverse=True)
         # print(convert_to_json(rerank_merge_chunks))
 
         # 断崖检测

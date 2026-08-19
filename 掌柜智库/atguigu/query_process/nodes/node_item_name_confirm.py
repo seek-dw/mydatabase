@@ -1,6 +1,7 @@
 # atguigu/query_process/nodes/node_item_name_confirm.py
 
 import json
+import re
 from typing import Any
 from langchain.chat_models import init_chat_model
 from atguigu.config.config import ModelConfig, MilvusConfig
@@ -105,7 +106,7 @@ class NodeItemNameConfirm(NodeBase):
             res_json = res.content
             # 如果输出的是markdown格式的json,将其转化为
             if res_json.startswith("```json"):
-                res_json.replace("```json", "").replace("```", "")
+                res_json = res_json.replace("```json", "").replace("```", "")
             # 反序列化
             res_dict = json.loads(res_json)
             # 拿到意图识别和重写问题
@@ -172,19 +173,19 @@ class NodeItemNameConfirm(NodeBase):
         # 确定没问题的搜索结果,可以直接用
         confirm_item_names = [
             item.get("search_item_name") for item in all_searched_item_name_list
-            if item.get("score") >= 0.9
+            if item.get("score") >= 0.8
         ]
         # 模糊结果,得分不高不低,需要用户确认
         option_item_names = [
             item.get("search_item_name") for item in all_searched_item_name_list
-            if item.get("score") >= 0.5 and item.get("score") < 0.9
+            if item.get("score") >= 0.5 and item.get("score") < 0.8
         ]
         # 如果存在则赋值给最终的item_name
         if confirm_item_names:
             final_item_names = confirm_item_names
             answer = ""
         elif option_item_names:
-            final_item_names = []
+            final_item_names = [] #question 这里item为啥为空?只能为空?
             answer = f"请确认您要咨询的商品是哪一个{','.join(option_item_names)}"
         else:
             final_item_names = []

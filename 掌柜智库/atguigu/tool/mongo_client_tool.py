@@ -50,7 +50,7 @@ def get_recent_history_list(session_id,limit = 10):
     return list(result)
 
 
-def add_or_update_history(session_id,role,text,rewritten_query=None,item_names=None,ts=None,_id=None):
+def add_or_update_history(session_id,role,text,rewritten_query=None,item_names=None,image_urls = None,ts=None,_id=None):
     collection = get_mongo_collection()
     #如果_id存在,说明该次函数调用传入了_id,即更新操作
     if _id:
@@ -61,7 +61,8 @@ def add_or_update_history(session_id,role,text,rewritten_query=None,item_names=N
             "text":text,
             "rewritten_query":rewritten_query,
             "item_names":item_names,
-            "ts":ts or time.time()
+            "ts":ts or time.time(),
+            "image_urls":image_urls
         }
         #update_one进行更新操作:update_one(filter,update)
         collection.update_one({"_id":_id},{"$set":data})
@@ -74,7 +75,9 @@ def add_or_update_history(session_id,role,text,rewritten_query=None,item_names=N
             "text":text,
             "rewritten_query":rewritten_query,
             "item_names":item_names,
-            "ts":ts or time.time()
+            "ts":ts or time.time(),
+            "image_urls": image_urls
+
         }
         #QUESTION 添加的时候返回对象?,更新会不会返回对象,查询和删除呢?返回什么对象?有什么用?
         result = collection.insert_one(data)

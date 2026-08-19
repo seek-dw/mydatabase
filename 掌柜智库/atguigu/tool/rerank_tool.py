@@ -10,14 +10,14 @@ def rerank(query,texts,limit=10):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "Qwen/Qwen3-VL-Reranker-8B",
+            "model": "Qwen/Qwen3-Reranker-8B",
             "query": query,
             "documents": texts,
             "return_documents": True,
             "top_n": limit
         }
 
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers,timeout=5)
         if response.status_code == 200:
             return [{"index":res.get("index"),
                      "score":res.get("relevance_score")}
