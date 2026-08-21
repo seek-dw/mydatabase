@@ -24,12 +24,18 @@ class NodeRrf(NodeBase):
         #校验数据
         embedding_chunks = state.get("embedding_chunks","")
         hyde_embedding_chunks = state.get("hyde_embedding_chunks","")
-        if not embedding_chunks or not hyde_embedding_chunks:
-            logger.info("倒排融合节点获取数据失败")
-            raise Exception("倒排融合节点获取数据失败")
-
-        #给出每路的权重
-        weight_embedding = [(embedding_chunks,1),(hyde_embedding_chunks,1)]
+        # ==================== AI修改 开始 ====================
+        # 宽松校验：HyDE在课程/题目意图下被跳过返回空列表是正常情况
+        # 只要有一路有结果就继续融合,两路都空才报错
+        # 2026-08-20 改: 两路都空时不再 raise 整链崩溃(用户实测知识库数据缺失时
+        # 直接报"倒排融合节点获取数据失败"错误), 改为降级返回空列表,
+        # 让 answer_output 走"无结果"兜底分支, 给用户友好回复而不是报错。
+        if not embedding_chunks and not hyde_embedding_chunks:
+            logger.warning("倒排融合节点: 两路检索均为空(可能知识库缺少该数据), 降级返回空结果")
+            return {"rrf_chunks": []}
+        # 过滤掉空的路,只融合有数据的多路
+        weight_embedding = [(chunks,1) for chunks in (embedding_chunks, hyde_embedding_chunks) if chunks]
+        # ==================== AI修改 结束 ====================
 
         #倒排融合
         #逻辑:
@@ -43,7 +49,21 @@ class NodeRrf(NodeBase):
         for chunks,weight in weight_embedding:
             for idx,chunk in enumerate(chunks):
                 chunk_id = chunk.get("id","")
-                chunk_score = chunk.get("score","")+weight/(idx+60)
+                # ==================== AI修改 开始 ====================
+                # 修复伪RRF公式(提升召回质量):
+                # 原代码: chunk_score = chunk.get("score",0.0)+weight/(idx+60)
+                # 问题: 余弦相似度约0.75~0.95,RRF排名分约1/(60+rank)≈0.016,
+                #       两者量纲差了近两个数量级,直接相加后相似度完全主导,
+                #       chunk在哪一路排第几几乎不影响结果——
+                #       "多路投票"机制名存实亡,两路召回等于没融合。
+                # 修复: 标准RRF公式 s = Σ w/(k+rank),只看排名不看原始分。
+                #       排名是各路检索模型"投的票",两路都把同一chunk排前面,
+                #       它的融合分就高——这才是RRF的本意。
+                # 原始相似度另存sim_score字段保留,不影响rerank节点后续重算score
+                RRF_K = 60
+                chunk["sim_score"] = chunk.get("score", 0.0)
+                chunk_score = weight / (RRF_K + idx + 1)
+                # ==================== AI修改 结束 ====================
                 if chunk_id in final_chunk_dict:
                     final_chunk_dict.get(chunk_id)["score"] += chunk_score
                 else:
@@ -54,8 +74,16 @@ class NodeRrf(NodeBase):
 
 
         rrf_chunks = sorted(final_chunk_dict.values(), key=lambda x: x["score"], reverse=True)
-        #Question为什么图片里面的摘要和url都没了
-        print(len(rrf_chunks))
+        # ==================== AI修改 开始 ====================
+        # 原Question: 为什么图片里面的摘要和url都没了?
+        # 答案: 摘要和url并没有丢。图片处理节点(node_md_img)在导入时已把md里的
+        # 图片原文 ![xxx](images/xxx.jpg) 替换成了 ![摘要文字](minio的url),
+        # 摘要和url都嵌在content字符串内部随chunk一起存储;
+        # RRF按id去重时整个chunk字典原样保留(见上方final_chunk_dict[chunk_id]=chunk),
+        # 所有字段都不会丢。前端拿图片的方式是node_answer_output用正则从content里
+        # 提取 ![..](url) 的url并放进image_urls返回,而不是靠独立字段。
+        # 另: 删除了调试残留的print(len(rrf_chunks)),生产代码不应print
+        # ==================== AI修改 结束 ====================
         return {
             "rrf_chunks":rrf_chunks
         }

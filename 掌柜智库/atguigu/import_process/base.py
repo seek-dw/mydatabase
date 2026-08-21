@@ -37,6 +37,10 @@ class NodeBase(ABC):
             add_node_duration(task_id, self.name, end_time - start_time)
             return result
         except Exception as e:
-            logger.error(f"节点{self.name}执行异常了")
+            # ==================== AI修改 开始 ====================
+            # 原来只打"节点xxx执行异常了"不打异常内容, 用户看不到真正的报错。
+            # 改为 exc_info=True 输出完整 traceback, 方便定位根因。
+            # ==================== AI修改 结束 ====================
+            logger.error(f"节点{self.name}执行异常了: {e}", exc_info=True)
             raise e
 

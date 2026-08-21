@@ -1,6 +1,7 @@
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
+import os
 from atguigu.query_process.nodes.node_answer_output import NodeAnswerOutput
 from atguigu.query_process.nodes.node_item_name_confirm import NodeItemNameConfirm
 from atguigu.query_process.nodes.node_rerank import NodeRerank
@@ -43,11 +44,29 @@ class MainGraphRunner:
 
 
     def after_confirm_router(self, state: QueryGraphState):
+        # ==================== AI修改 开始 ====================
+        # 意图路由分流：
+        # 1.已有反馈话术(需要用户确认商品/拒答引导) → 直达答案节点吐出去
+        # 2.闲聊(chitchat) → 直达答案节点走流式聊天分支,跳过全部检索
+        # 3.其余(course/question/doc/knowledge) → 并行检索, 按 .env 开关动态组合:
+        #    - embedding 本地检索必走(快, 毫秒级)
+        #    - web_search 默认关闭(ENABLE_WEB_SEARCH=false): 每轮重建MCP连接+网络
+        #      往返是回答慢的元凶之一, 本地知识库为主时收益低风险大
+        #    - hyde 默认关闭(ENABLE_HYDE=false): HyDE每轮调用一次LLM生成假设性
+        #      答案再检索, 额外3-5秒延迟, 是回答慢的元凶。本地知识库问答场景
+        #      embedding检索已足够, 如需开启在.env设 ENABLE_HYDE=true
         answer = state.get("answer","")
         if answer:
             return NodeAnswerOutput.name
-        else:
-            return [NodeSearchEmbedding.name, NodeWebSearchMcp.name,NodeSearchEmbeddingHyde.name]
+        if state.get("query_type") == "chitchat":
+            return NodeAnswerOutput.name
+        routes = [NodeSearchEmbedding.name]
+        if os.getenv("ENABLE_WEB_SEARCH", "false").strip().lower() in ("1", "true", "yes", "on"):
+            routes.append(NodeWebSearchMcp.name)
+        if os.getenv("ENABLE_HYDE", "false").strip().lower() in ("1", "true", "yes", "on"):
+            routes.append(NodeSearchEmbeddingHyde.name)
+        return routes
+        # ==================== AI修改 结束 ====================
 
     def run(self,state):
         if self.graph is None:

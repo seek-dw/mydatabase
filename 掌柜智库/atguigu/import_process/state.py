@@ -11,6 +11,11 @@ class ImportGraphState(TypedDict):
     #流程控制标记
     is_md_read_enabled: bool    # 是否启用 Markdown 读取路径
     is_pdf_read_enabled: bool   # 是否启用 PDF 读取路径
+    # ==================== AI修改 开始 ====================
+    # 教育实战：docx 支持（项目文档/课程文档大量为docx格式）
+    is_docx_read_enabled: bool  # 是否启用 DOCX 读取路径
+    docx_path: str              # DOCX 文件路径 (如果输入是docx)
+    # ==================== AI修改 结束 ====================
 
     # 路径相关
     local_dir: str  # 当前工作目录或输出目录

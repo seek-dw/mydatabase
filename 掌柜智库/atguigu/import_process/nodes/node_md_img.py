@@ -2,6 +2,7 @@
 import base64
 import os
 import re
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -14,6 +15,19 @@ from atguigu.import_process.base import NodeBase
 from atguigu.import_process.state import ImportGraphState
 from atguigu.tool.logger import logger
 from atguigu.tool.minio_client_tool import create_minio_client
+# ==================== AI修改 开始 ====================
+# 统一使用共享图片 URL 构造器，避免 endpoint 已带 http:// 时重复拼接协议，
+# 同时对中文、空格等文件名进行 URL 编码，保证前端 img.src 可以正常访问。
+# ==================== AI修改 结束 ====================
+from atguigu.tool.image_url_tool import build_minio_image_url
+
+# ==================== AI修改 开始 ====================
+# 全局视觉模型信号量: 限制同时调用视觉模型(图片摘要生成)的并发数为2。
+# 文档级并发可以放开(max_workers=6, 切分/向量化/入Milvus全并行),
+# 但视觉模型调用受API的TPM限制, 必须单独限流。
+# 信号量是进程级全局的, 所有node_md_img实例共享, 保证最多2张图同时调API。
+_vl_semaphore = threading.Semaphore(2)
+# ==================== AI修改 结束 ====================
 
 
 class NodeMDImg(NodeBase):
@@ -44,6 +58,29 @@ class NodeMDImg(NodeBase):
     """
 
     name = "node_md_img"
+
+    # ==================== AI修改 开始 ====================
+    # 原improve: 上下文拿取过于随意没有限制了
+    # 改进: 抽出专门的方法,做三件事——
+    # 1.去掉切片窗口里"其他图片"的引用(图片A的上下文不该再塞图片B的base64摘要噪音)
+    # 2.压缩空白字符(原文连续换行/缩进浪费宝贵的上下文窗口)
+    # 3.按长度上限裁剪,尽量在句子边界断开,避免把句子截一半让视觉模型误读
+    @staticmethod
+    def _clean_context(raw: str, limit: int) -> str:
+        # 去掉上下文里其他图片的md引用: ![...](...) 整段替换为占位符
+        cleaned = re.sub(r"!\[.*?\]\(.*?\)", "[图片]", raw)
+        # 压缩连续空白(换行/制表符/多空格)为单个空格
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        # 超长: 优先在句读处断开,找不到就硬截
+        cut = cleaned[:limit]
+        for sep in ("。", "；", "，", " ", "."):
+            pos = cut.rfind(sep)
+            if pos > limit // 2:  # 断点不能太靠前,否则丢的内容太多
+                return cut[:pos + 1]
+        return cut
+    # ==================== AI修改 结束 ====================
 
     def process(self, state: ImportGraphState):
 
@@ -98,12 +135,22 @@ class NodeMDImg(NodeBase):
                 logger.warning("图片格式错误")
                 continue
             #图片格式符合要求,进行正则匹配
+            # ==================== AI修改 开始 ====================
+            # 原正则只认 Markdown 图片语法 ![](path)，但项目文档(掌柜智库19篇)
+            # 的123张图全部用 HTML <img src="images/xxx.jpg"> 标签引用，
+            # 导致一张图都匹配不上、被当作"未被引用"跳过、不生成摘要。
+            # 现在同时支持两种引用语法，任一命中即可定位引用在文档中的位置。
             """
-            匹配 Markdown 图片引用格式 ![描述](路径)，定位图片在文档中的位置。
-            使用非贪婪匹配避免跨越多个图片引用，使用 re.escape 转义图片名中的特殊字符，
-            通过 match.span() 获取图片索引，用于截取图片上下文辅助视觉模型生成摘要。
+            定位图片在文档中的位置，支持两种引用语法：
+              1) Markdown: ![描述](路径)        形如 ![](images/a.png)
+              2) HTML img: <img src="路径" ...> 形如 <img src="images/1.整体架构图.jpg" style="zoom:67%;" />
+            用 re.escape 转义图片名中的特殊字符(点、括号、空格等)，
+            通过 match.span() 获取引用索引，用于截取图片上下文辅助视觉模型生成摘要。
             """
-            pattern = re.compile(r"!\[.*?\]\(.*?" + re.escape(image_name) + r"\)")
+            md_pat   = r"!\[.*?\]\(.*?" + re.escape(image_name) + r"\)"
+            html_pat = r'<img[^>]*?src\s*=\s*["\'].*?' + re.escape(image_name) + r'["\']'
+            pattern = re.compile(md_pat + "|" + html_pat, re.IGNORECASE)
+            # ==================== AI修改 结束 ====================
             #match返回要给对象,对象中包含了span跨度索引
             match = pattern.search(md_content)
             # print(match)
@@ -112,11 +159,16 @@ class NodeMDImg(NodeBase):
                 continue
             #解包
             start, end = match.span()
-            #improve这里可以进行优化?上下文拿取过于随意没有限制了
+            # ==================== AI修改 开始 ====================
+            # 原improve: 上下文拿取过于随意没有限制了
+            # 已改进: 原来直接max(0,start-200):start盲切200字符,可能截断句子、
+            # 还会把相邻其他图片的引用一起带给视觉模型当"上下文"(纯噪音)。
+            # 现在经过_clean_context: 去其他图片引用、压空白、句读处断开
             #上文
-            pre_context = md_content[max(0,start-length):start]
+            pre_context = self._clean_context(md_content[max(0,start-length):start], length)
             #下文
-            follow_context = md_content[end:min(len(md_content),end+length)]
+            follow_context = self._clean_context(md_content[end:min(len(md_content),end+length)], length)
+            # ==================== AI修改 结束 ====================
 
             # 拿到每个图片的路径
             # 此处的image_name是字符串, / 的左边必须是Path对象,右边可以任意拼接
@@ -201,11 +253,35 @@ class NodeMDImg(NodeBase):
                 llm = init_chat_model(
                     model = ModelConfig.VL_MODEL_NAME,
                     model_provider = "openai",
-                    api_key = ModelConfig.VL_MODEL_API_KEY,
+                    api_key = ModelConfig.MODA_API_KEY,
                     base_url = ModelConfig.VL_MODEL_BASE_URL,
                     temperature = ModelConfig.VL_MODEL_TEMPERATURE
                 )
-            res = llm.invoke(input = messages)
+            # ==================== AI修改 开始 ====================
+            # 全局信号量限流 + 429指数退避重试(双保险):
+            # 1.信号量: 最多2个线程同时调视觉模型(不管多少文档在并发跑),
+            #   切分/向量化/入Milvus不受限, 只有图片摘要生成这一步限流
+            # 2.重试: 万一信号量+deque双重限流下仍偶发429, 自动退避重试
+            res = None
+            _wait_sec = 30
+            for _attempt in range(3):
+                try:
+                    _vl_semaphore.acquire()
+                    try:
+                        res = llm.invoke(input = messages)
+                    finally:
+                        _vl_semaphore.release()
+                    break
+                except Exception as _e:
+                    _msg = str(_e)
+                    _is_rate = "429" in _msg or "rate" in _msg.lower() or "Too Many" in _msg or "TPM" in _msg
+                    if _is_rate and _attempt < 2:
+                        logger.warning(f"图片摘要生成触发限流(429), 第{_attempt + 1}次重试, 等待{_wait_sec}秒后重试")
+                        time.sleep(_wait_sec)
+                        _wait_sec *= 2
+                        continue
+                    raise
+            # ==================== AI修改 结束 ====================
             image_with_summary_list.append(
                 {
                     "image_name":image_with_context_str.get("image_name"),
@@ -215,8 +291,15 @@ class NodeMDImg(NodeBase):
             )
 
     # 6.获得url地址
-        #构造一个minio的上传图片存储路径
-        upload_dir = MinioConfig.MINIO_IMG_DIR
+        # ==================== AI修改 开始 ====================
+        # 原逻辑: 所有文档的图片共用同一个上传目录(MINIO_IMG_DIR),且每次导入前
+        #         幂等删除会清空"整个目录"
+        # 隐患: 连续导入多个文档时(如19个项目文档),后一个文档的导入会把前一个
+        #       文档刚上传的图片全部删掉,导致前面文档chunk里已入库的图片URL全部404
+        # 改进: 每个文档使用独立子目录(以md文件名stem命名),幂等删除只清自己目录——
+        #       既保留"同一文档重导时不残留旧图"的幂等性,又不会误删其他文档的图片
+        upload_dir = MinioConfig.MINIO_IMG_DIR.rstrip("/") + "/" + md_path_obj.stem
+        # ==================== AI修改 结束 ====================
         #获取minio客户端
         minio_client = create_minio_client()
 
@@ -247,8 +330,15 @@ class NodeMDImg(NodeBase):
                 file_path = image_with_summary.get("image_single_path")
             )
 
-        #获取url地址
-            url = f"http://{MinioConfig.MINIO_ENDPOINT}/{MinioConfig.MINIO_BUCKET_NAME}/{upload_dir}/{image_with_summary.get('image_name')}"
+        # ==================== AI修改 开始 ====================
+        # 图片已经通过 fput_object 写入 MinIO；这里生成与对象名完全一致的
+        # 浏览器访问地址，后续会随 Markdown 一起进入切片并写入 Milvus。
+            url = build_minio_image_url(
+                MinioConfig.MINIO_ENDPOINT,
+                MinioConfig.MINIO_BUCKET_NAME,
+                f"{upload_dir}/{image_with_summary.get('image_name')}",
+            )
+        # ==================== AI修改 结束 ====================
             image_with_summary_and_url_list.append(
                 {
                     **image_with_summary,
@@ -260,10 +350,25 @@ class NodeMDImg(NodeBase):
         #url+摘要都已经获取,现在替换原md文件中的 图片并重命名备份文件
         #使用正则匹配到每一站图片然后进行替换
         for image_with_summary_and_url in image_with_summary_and_url_list:
-            pattern = re.compile(r"!\[.*?\]\(.*?" + re.escape(image_with_summary_and_url.get("image_name")) + r"\)")
+            img_name = image_with_summary_and_url.get("image_name")
+            summary  = image_with_summary_and_url.get("summary")
+            url      = image_with_summary_and_url.get("url")
+            # ==================== AI修改 开始 ====================
+            # 原正则只认 Markdown ![](path) 语法, 但项目文档(掌柜智库19篇)的123张图
+            # 全部用 HTML <img src="images/xxx.jpg" style="zoom:67%;" /> 标签引用,
+            # 匹配不到 → 摘要和MinIO URL 没回填进 md_content → chunk 里既没有摘要也
+            # 没有 url → 答案生成节点用 r'!\[.*?\]\((.*?)\)' 提取图片URL时一张都提不到
+            # → 前端不显示图。这是图片输出链路的断点(与"配对""反查"两处同根因)。
+            # 现在同时支持两种引用语法, 统一替换成 Markdown ![summary](url) 格式,
+            # 下游 answer_output 的 markdown 提取正则无需改动即可拿到 MinIO URL。
+            md_pat   = r"!\[.*?\]\(.*?" + re.escape(img_name) + r"\)"
+            # html img 标签可能带 style/alt 等属性,且可能自闭合 <img .../> 或 <img ...>
+            html_pat = r'<img[^>]*?src\s*=\s*["\'].*?' + re.escape(img_name) + r'["\'][^>]*?/?>'
+            pattern = re.compile(md_pat + "|" + html_pat, re.IGNORECASE)
+            # ==================== AI修改 结束 ====================
             #pattern.sub(新内容,要替换的原文),pattern中自带匹配条件
             md_content = pattern.sub(
-                f"![{image_with_summary_and_url.get('summary')}]({image_with_summary_and_url.get('url')})",
+                f"![{summary}]({url})",
                 md_content
             )
             #备份新的md文件
@@ -272,6 +377,14 @@ class NodeMDImg(NodeBase):
                 f.write(md_content)
                 logger.info(f"{md_path_obj}备份成功,备份文件路径为:{new_md_path_obj}")
 
+        # ==================== AI修改 开始 ====================
+        # 记录导入阶段实际替换的图片数量，后续如果查询没有图片，
+        # 可以快速判断是“导入没发现图”还是“查询/前端丢图”。
+        logger.info(
+            f"图片处理完成: 发现{len(image_name_list)}个文件，"
+            f"成功上传并替换{len(image_with_summary_and_url_list)}张图片"
+        )
+        # ==================== AI修改 结束 ====================
         return {"md_content":md_content}
 
 

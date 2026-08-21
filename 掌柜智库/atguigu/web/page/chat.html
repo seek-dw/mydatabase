@@ -268,6 +268,17 @@
             align-items: center;
         }
 
+        /* ==================== AI修改 开始 ==================== */
+        /* 答案容器位于进度条下方,与进度条保持间距 */
+        .answer {
+            margin-top: 10px;
+        }
+
+        .answer:empty {
+            margin-top: 0;
+        }
+        /* ==================== AI修改 结束 ==================== */
+
         .dot {
             width: 7px;
             height: 7px;
@@ -679,6 +690,10 @@
                 <summary>阶段进度（等待中）</summary>
                 <ul></ul>
               </details>
+              <!-- ==================== AI修改 开始 ==================== -->
+              <!-- 答案容器固定放在进度条下方: 状态在上,答案在下 -->
+              <div class="answer"></div>
+              <!-- ==================== AI修改 结束 ==================== -->
             </div>
             <div class="meta">${nowTime()}</div>
           </div>
@@ -788,12 +803,15 @@
             const {task_id} = data;
 
             const bubble = botMsgEl.querySelector('.bubble');
+            // ==================== AI修改 开始 ====================
+            // 骨架中已固定.answer容器且位于进度条下方,不再用insertBefore插到最前面
             let answerEl = bubble.querySelector('.answer');
             if (!answerEl) {
                 answerEl = document.createElement('div');
                 answerEl.className = 'answer';
-                bubble.insertBefore(answerEl, bubble.firstChild);
+                bubble.appendChild(answerEl);
             }
+            // ==================== AI修改 结束 ====================
 
             const es = new EventSource(`${API_BASE}/stream/${task_id}`);
             let rawAnswerText = '';
@@ -890,7 +908,17 @@
             const progress = botMsgEl.querySelector('details.progress');
             const typing = botMsgEl.querySelector('.typing');
             if (typing) typing.remove();
-            bubble.innerHTML = `请求失败：${escapeHtml(e.message || e)}\n\n` + progress.outerHTML;
+            // ==================== AI修改 开始 ====================
+            // 错误提示也放到进度条下方,保持"状态在上,内容在下"的统一布局
+            const errEl = document.createElement('div');
+            errEl.className = 'answer';
+            errEl.textContent = `请求失败：${e.message || e}`;
+            if (progress) {
+                progress.insertAdjacentElement('afterend', errEl);
+            } else {
+                bubble.appendChild(errEl);
+            }
+            // ==================== AI修改 结束 ====================
             sendBtn.disabled = false;
         }
     }

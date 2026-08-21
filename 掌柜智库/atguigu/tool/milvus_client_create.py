@@ -1,6 +1,7 @@
 from pymilvus import MilvusClient, AnnSearchRequest, WeightedRanker
 
 from atguigu.config.config import MilvusConfig
+from atguigu.tool.logger import logger
 
 milvus_client =None
 def get_milvus_client():
@@ -10,6 +11,63 @@ def get_milvus_client():
             uri= MilvusConfig.milvus_url
         )
     return milvus_client
+
+
+# ==================== AI修改 开始 ====================
+# 幂等的"确保collection已加载"工具函数
+# 背景: Milvus的collection必须load进内存才能做向量检索和按条件删除,
+# 刚create_collection的新表、被release的表、Milvus重启后的表都处于
+# "not loaded"状态,此时直接delete/search会报:
+#   MilvusException: (code=101, message=collection not loaded)
+# 修复策略:
+# 1.先查get_load_state,只有非Loaded状态才真正发起load,避免每次调用
+#   都多一次load请求(get_load_state是轻量元数据查询,开销极小)
+# 2.任何异常都不向上抛——加载失败时让后续真正的业务操作去报错,
+#   那里的错误信息更具体,不会误导排查方向
+_loaded_check_cache = set()  # 本进程内已确认Loaded的表,跳过重复的状态查询
+
+def ensure_collection_loaded(collection_name):
+    """确保collection已加载进内存,未加载则自动load,可重复调用无副作用"""
+    client = get_milvus_client()
+    if collection_name in _loaded_check_cache:
+        return
+    try:
+        state = client.get_load_state(collection_name=collection_name)
+        # state为LoadState枚举: NotLoad / Loading / Loaded
+        # (空值兼容: 某些pymilvus版本查询不到状态时按未加载处理)
+        if state is None or "Loaded" not in str(state):
+            client.load_collection(collection_name=collection_name)
+            logger.info(f"collection {collection_name} 未加载,已自动load进内存")
+        else:
+            _loaded_check_cache.add(collection_name)
+    except Exception as e:
+        # 兜底: 状态查询失败(老版本无该方法等)就直接尝试load,
+        # 已加载的表重复load在Milvus侧是幂等的,不会报错
+        try:
+            client.load_collection(collection_name=collection_name)
+        except Exception as load_err:
+            logger.warning(f"collection {collection_name} 加载检查失败: {load_err}, 原始异常: {e}")
+
+
+# ==================== AI修改 开始 ====================
+def select_existing_output_fields(client, collection_name, desired_fields):
+    """按Milvus当前schema筛选查询字段，兼容旧集合缺少新元数据字段。"""
+    try:
+        description = client.describe_collection(collection_name=collection_name)
+        existing_fields = {
+            field.get("name")
+            for field in description.get("fields", [])
+            if field.get("name")
+        }
+        selected = [field for field in desired_fields if field in existing_fields]
+        # 极少数旧Milvus版本describe_collection返回不完整时保留原列表，
+        # 让底层报出真实错误，而不是在这里静默丢掉所有输出字段。
+        return selected or list(desired_fields)
+    except Exception as exc:
+        logger.warning(f"读取collection字段失败，暂按目标字段查询: {collection_name}, {exc}")
+        return list(desired_fields)
+# ==================== AI修改 结束 ====================
+# ==================== AI修改 结束 ====================
 
 #创建混合检索请求
 def create_reqs(dense_data,
@@ -43,6 +101,13 @@ def create_reqs(dense_data,
 #创建混合检索方法:
 def my_hybrid_search(collection_name,reqs,ranker=(0.5,0.5),limit=10,output_fields=None):
     milvus_client = get_milvus_client()
+
+    # ==================== AI修改 开始 ====================
+    # 检索前确保collection已加载: 新建的表/Milvus重启后的表处于not loaded状态,
+    # 直接检索会报collection not loaded。在此统一收口,所有调用
+    # my_hybrid_search的查询节点(检索/主体确认/HyDE/评测)都自动受到保护
+    ensure_collection_loaded(collection_name)
+    # ==================== AI修改 结束 ====================
 
     """
     norm_score归一化,统一量纲:稠密向量的重排序分数和稀疏向量的重排序分数

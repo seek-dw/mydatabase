@@ -1,5 +1,6 @@
 # atguigu/query_process/nodes/node_web_search_mcp.py
 import json
+import os
 
 from sympy import print_rcode
 
@@ -25,7 +26,22 @@ class NodeWebSearchMcp(NodeBase):
     # 覆盖基类的 name 属性，标识节点名称
     name: str = "node_web_search_mcp"
 
+    # ==================== AI修改 开始 ====================
+    # 回答慢的元凶之一: 每轮都重建MCP连接+网络搜索, 且失败重试3次,
+    # MCP服务不可达/网络差时一次回答要多等10-30秒。
+    # 修复: 增加 .env 开关 ENABLE_WEB_SEARCH(默认false) —— 本地知识库为主,
+    # 网络搜索默认关闭; 开启时也快速失败(单次尝试,失败返回空,不重试不等待)。
+    @staticmethod
+    def _enabled() -> bool:
+        return os.getenv("ENABLE_WEB_SEARCH", "false").strip().lower() in ("1", "true", "yes", "on")
+
     def process(self, state: QueryGraphState):
+        # ==================== AI修改 开始 ====================
+        if not self._enabled():
+            # 开关关闭: 返回空结果, 不碰MCP, 不拖慢链路
+            logger.info("web_search 已关闭(ENABLE_WEB_SEARCH!=true), 返回空结果")
+            return {"web_search_docs": []}
+        # ==================== AI修改 结束 ====================
         # 获取重写的问题
         rewritten_query = state.get("rewritten_query", "")
         if not rewritten_query:
@@ -33,10 +49,20 @@ class NodeWebSearchMcp(NodeBase):
             raise ValueError("rewritten_query不能为空")
 
         #调用mcp
-        result = asyncio.run(self.web_search(rewritten_query,10))
+        try:
+            result = asyncio.run(self.web_search(rewritten_query,10))
+        except Exception as e:
+            # 快速失败: 网络/MCP异常不阻塞主链路, 返回空结果让RRF/rerank正常走
+            logger.error(f"web_search 调用失败, 返回空结果继续: {e}")
+            return {"web_search_docs": []}
+        # ==================== AI修改 结束 ====================
         print(result)
         #解析结果
-        data = json.loads(result.content[0].text).get("pages")
+        try:
+            data = json.loads(result.content[0].text).get("pages")
+        except Exception as e:
+            logger.error(f"web_search 结果解析失败, 返回空结果继续: {e}")
+            return {"web_search_docs": []}
         return {
             "web_search_docs": [
                 {

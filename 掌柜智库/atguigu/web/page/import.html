@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>文件导入服务</title>
+    <!-- ==================== AI修改 开始 ====================
+         旧导入页统一跳转到主工作台，避免两个页面的导入能力和视觉样式不一致。
+         主工作台已包含普通文档导入、教育资料导入、状态跟踪和教育目录展示。
+         ==================== AI修改 结束 ==================== -->
+    <script>
+        // ==================== AI修改 开始 ====================
+        // 用户访问旧地址时直接进入新的集成工作台，保留旧地址兼容性。
+        window.location.replace('/');
+        // ==================== AI修改 结束 ====================
+    </script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -385,8 +395,11 @@
 
     <div class="upload-area" id="dropZone" onclick="document.getElementById('fileInput').click()">
         <div class="upload-icon">☁️</div>
-        <div class="upload-text">点击或拖拽文件到此处 (PDF/MD)</div>
-        <input type="file" id="fileInput" class="file-input"  accept=".pdf,.md">
+        <!-- ==================== AI修改 开始 ==================== -->
+        <!-- 教育实战需求: 支持docx格式上传 + multiple多文件批量上传 -->
+        <div class="upload-text">点击或拖拽文件到此处 (PDF/MD/DOCX, 支持多选)</div>
+        <input type="file" id="fileInput" class="file-input"  accept=".pdf,.md,.docx" multiple>
+        <!-- ==================== AI修改 结束 ==================== -->
     </div>
 
     <div id="fileList" class="file-list">

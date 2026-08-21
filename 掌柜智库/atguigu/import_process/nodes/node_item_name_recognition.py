@@ -9,7 +9,7 @@ from atguigu.import_process.base import NodeBase
 from atguigu.import_process.state import ImportGraphState
 from atguigu.tool.bgem3_create_tool import  vectorize_texts
 from atguigu.tool.logger import logger
-from atguigu.tool.milvus_client_create import get_milvus_client
+from atguigu.tool.milvus_client_create import get_milvus_client, ensure_collection_loaded
 
 
 class NodeItemNameRecognition(NodeBase):
@@ -62,7 +62,7 @@ class NodeItemNameRecognition(NodeBase):
         llm = init_chat_model(
             model = ModelConfig.LLM_MODEL_NAME,
             model_provider = "openai",
-            api_key = ModelConfig.VL_MODEL_API_KEY,
+            api_key = ModelConfig.MODA_API_KEY,
             base_url = ModelConfig.VL_MODEL_BASE_URL,
             temperature = ModelConfig.VL_MODEL_TEMPERATURE
         )
@@ -80,6 +80,15 @@ class NodeItemNameRecognition(NodeBase):
 
         if not item_name:
             item_name = file_title
+
+        # ==================== AI修改 开始 ====================
+        # item_name超长兜底:items表和chunks表的item_name字段max_length=100,
+        # LLM偶发输出超长主体名(如把整句话当主体名)会导致Milvus插入直接报错,
+        # 整个文档导入失败。查询侧和导入侧用的是同一个截断值,匹配一致性不受影响
+        if len(item_name) > 100:
+            logger.info(f"item_name超过100字符({len(item_name)}),已截断")
+            item_name = item_name[:100]
+        # ==================== AI修改 结束 ====================
 
         #创建milvus客户端
         milvus_client = get_milvus_client()
@@ -152,6 +161,12 @@ class NodeItemNameRecognition(NodeBase):
         safe_item_name = item_name.replace("\\","\\\\").replace("'","\\").replace('"',"\\")
 
         #类似sql语句Delete * from collection_name where filter (item_name == xxxx)
+        # ==================== AI修改 开始 ====================
+        # 删除前确保表已load进内存: 新建的items表/Milvus重启后的表处于
+        # not loaded状态,直接delete会报
+        # MilvusException(code=101, message=collection not loaded)
+        ensure_collection_loaded(collection_name)
+        # ==================== AI修改 结束 ====================
         milvus_client.delete(collection_name,filter = (f"item_name == '{safe_item_name}'") )
 
         #幂等性删除完成后准备插入数据

@@ -87,6 +87,10 @@ def ask_question_search(task_id,query, session_id):
     except Exception as e:
         update_task_status(task_id, TASK_STATUS_FAILED)
         put_data(task_id,event = "error",data = get_task_info(task_id))
+        # ==================== AI修改 开始 ====================
+        # 兜底推一条可读的错误话术，前端至少能显示出来，而不是干等到超时
+        put_data(task_id, "final", {"answer": "抱歉，处理您的问题时出现了错误，请稍后重试。"})
+        # ==================== AI修改 结束 ====================
         raise e
 
 

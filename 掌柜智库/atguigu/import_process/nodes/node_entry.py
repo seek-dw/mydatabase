@@ -53,9 +53,21 @@ class NodeEntry(NodeBase):
                 "is_pdf_read_enabled":True,
                 "pdf_path":local_file_path
             }
+        # ==================== AI修改 开始 ====================
+        # 教育实战新增：支持docx格式（课程文档/项目文档大量为docx）
+        if suffix == ".docx":
+            return{
+                "file_title":file_title,
+                "is_docx_read_enabled":True,
+                "docx_path":local_file_path
+            }
+        # ==================== AI修改 结束 ====================
         else:
             logger.error("文件格式错误")
-            raise Exception("请上传正确的文件格式, '.md' or '.pdf'")
+            # ==================== AI修改 开始 ====================
+            # 错误提示补充.docx格式
+            raise Exception("请上传正确的文件格式, '.md' or '.pdf' or '.docx'")
+            # ==================== AI修改 结束 ====================
 
 
 

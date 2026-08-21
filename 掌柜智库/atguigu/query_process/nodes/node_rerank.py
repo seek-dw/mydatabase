@@ -24,12 +24,28 @@ class NodeRerank(NodeBase):
         """
         rrf_chunks = state.get("rrf_chunks","")
         web_search_docs= state.get("web_search_docs","")
-        if not rrf_chunks or not web_search_docs:
-            logger.error("Rerank 节点接收数据失败")
-            raise Exception("Rerank 节点接收数据失败")
+        # ==================== AI修改 开始 ====================
+        # 宽松校验：网络搜索失败/为空不应导致整个重排节点崩溃,只要求本地融合结果非空
+        # 2026-08-20 改: RRF结果为空(知识库无匹配数据)时同样不 raise,
+        # 降级返回空列表, 由 answer_output 走"无结果"兜底分支友好回复。
+        if not rrf_chunks:
+            logger.warning("Rerank 节点: RRF结果为空, 降级返回空结果(答案节点走无结果分支)")
+            return {"reranked_docs": []}
+        if not web_search_docs:
+            web_search_docs = []
+        # ==================== AI修改 结束 ====================
 
         #列表相加
         merge_chunks = rrf_chunks + web_search_docs
+        # ==================== AI修改 开始 ====================
+        # 输入裁剪: 三路检索(RRF融合后)最多可到40+条, 一次性全送云端rerank
+        # payload巨大且耗时, 是回答慢的元凶之一。RRF已按融合分排序,
+        # 真正值得精排的只有前面一小部分 —— 裁剪到前20条(RERANK_MAX_TOPK上限),
+        # 既保证重排质量(断崖检测上限也是20)又省一半以上请求体。
+        RERANK_INPUT_LIMIT = 20
+        if len(merge_chunks) > RERANK_INPUT_LIMIT:
+            merge_chunks = merge_chunks[:RERANK_INPUT_LIMIT]
+        # ==================== AI修改 结束 ====================
         #取出merge_chunks里面的每一个chunk进行key值的整理
         # {
         #     "item_name": "HAK180烫金机",
@@ -52,14 +68,40 @@ class NodeRerank(NodeBase):
             "title":chunk.get("item_name","") or chunk.get("title",""),
             "content":chunk.get("content",""),
             "url":chunk.get("url",""),
-            "source":chunk.get("source","")
+            "source":chunk.get("source",""),
+            # ==================== AI修改 开始 ====================
+            # 透传教育元数据字段,供答案生成节点组装【来源】引用
+            "content_type":chunk.get("content_type",""),
+            "source_name":chunk.get("source_name",""),
+            "code":chunk.get("code",""),
+            "q_type":chunk.get("q_type",""),
+            # ==================== AI修改 开始 ====================
+            # 教育结构化字段透传到答案节点，来源展示不再依赖正文猜测。
+            "course_name": chunk.get("course_name", ""),
+            "course_code": chunk.get("course_code", ""),
+            "chapter_name": chunk.get("chapter_name", ""),
+            "course_category": chunk.get("course_category", ""),
+            "target_users": chunk.get("target_users", ""),
+            "learning_goals": chunk.get("learning_goals", ""),
+            "project_name": chunk.get("project_name", ""),
+            "question_bank_name": chunk.get("question_bank_name", ""),
+            "question_bank_code": chunk.get("question_bank_code", ""),
+            "question_code": chunk.get("question_code", ""),
+            "question_type": chunk.get("question_type", ""),
+            "source_path": chunk.get("source_path", ""),
+            # ==================== AI修改 结束 ====================
+            # ==================== AI修改 结束 ====================
         }
             for chunk in merge_chunks]
         # print(convert_to_json(merge_chunks))
         # 已经获取到合并的chunk,现在准备重排序模型参数,送入重排序模型
 
         rewritten_query = state.get("rewritten_query","")
-        texts = [chunk.get("content") if chunk.get("content") else "无内容" for chunk in merge_chunks]
+        # ==================== AI修改 开始 ====================
+        # 修复rerank空串400错误：官方明示纯空白内容会返回400
+        # 先strip,strip后为空串(纯空格/换行)就替换成"无内容"占位
+        texts = [(chunk.get("content") or "").strip() or "无内容" for chunk in merge_chunks]
+        # ==================== AI修改 结束 ====================
         # 送入重排序模型进行重排序
         # query问题 texts相关文档, 输出index:原文档的输入顺序 ,score:问题与原文档的相关性分数
         res = rerank(query = rewritten_query, texts = texts,limit = len(merge_chunks))
@@ -70,7 +112,10 @@ class NodeRerank(NodeBase):
         for i in res:
             merge_chunks[i.get("index")]["score"]= i.get("score")
 
-        rerank_merge_chunks = sorted(merge_chunks,key = lambda x:x.get("score",""),reverse=True)
+        # ==================== AI修改 开始 ====================
+        # 排序默认值由空字符串改为0.0,防止KeyError/TypeError
+        rerank_merge_chunks = sorted(merge_chunks,key = lambda x:x.get("score",0.0),reverse=True)
+        # ==================== AI修改 结束 ====================
         # print(convert_to_json(rerank_merge_chunks))
 
         # 断崖检测

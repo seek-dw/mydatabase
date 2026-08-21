@@ -27,22 +27,44 @@ class NodeSearchEmbeddingHyde(NodeBase):
     # 覆盖基类的 name 属性，标识节点名称
     name: str = "node_search_embedding_hyde"
 
+    # ==================== AI修改 开始 ====================
+    # LLM客户端懒加载缓存: 原来每次process都init_chat_model重新建立客户端
+    # (每次查询白白多一次连接/鉴权开销), 改成类级缓存只初始化一次, 后续复用。
+    # 与 node_item_name_confirm / node_answer_output 同款优化。
+    _llm = None
+    # ==================== AI修改 结束 ====================
+
     def process(self, state: QueryGraphState):
         #校验
         item_names = state.get("item_names","")
         rewritten_query = state.get("rewritten_query","")
-        if not item_names or not rewritten_query:
+        # ==================== AI修改 开始 ====================
+        # 1.宽松校验：宽泛问题可能没有具体主体名,只强制要求rewritten_query
+        if not rewritten_query:
             logger.error("向量搜索节点接收意图识别数据失败")
             raise Exception("向量搜索节点接收意图识别数据失败")
+        # 2.HyDE条件化：课程/题目检索不走HyDE
+        #    假设性答案适合"知识点问答",对"课程列表/题目查询"这种结构化检索反而会跑偏
+        query_type = state.get("query_type", "")
+        if query_type in ("course", "question"):
+            return {
+                "hyde_embedding_chunks": []
+            }
+        # ==================== AI修改 结束 ====================
 
         #生成假设性答案
-        llm = init_chat_model(
-            model = ModelConfig.LLM_MODEL_NAME,
-            model_provider = "openai",
-            api_key = ModelConfig.VL_MODEL_API_KEY,
-            base_url = ModelConfig.VL_MODEL_BASE_URL,
-            temperature = ModelConfig.VL_MODEL_TEMPERATURE
-        )
+        # ==================== AI修改 开始 ====================
+        # 类级懒加载缓存, 首次初始化后复用(省掉每轮重建HTTP客户端的开销)
+        if self._llm is None:
+            self._llm = init_chat_model(
+                model=ModelConfig.LLM_MODEL_NAME,
+                model_provider="openai",
+                api_key=ModelConfig.MODA_API_KEY,
+                base_url=ModelConfig.VL_MODEL_BASE_URL,
+                temperature=ModelConfig.VL_MODEL_TEMPERATURE
+            )
+        llm = self._llm
+        # ==================== AI修改 结束 ====================
 
         messages = [{
             "role":"user","content":HYDE_PROMPT.format(rewritten_query= rewritten_query)
@@ -66,10 +88,17 @@ class NodeSearchEmbeddingHyde(NodeBase):
         # (意图识别出来的item_names经过item_name向量库匹配搜索到的所有主体识别名称)
         collection_name = MilvusConfig.milvus_chunks_collection
 
-        item_names = [
-            item.replace("\\", "\\\\").replace("'", "\'").replace('"', "\"")
-            for item in item_names
-        ]
+        # ==================== AI修改 开始 ====================
+        # expr组合构建(与node_search_embedding保持一致,item_names可能为空)
+        expr_conditions = []
+        if item_names:
+            item_names = [
+                item.replace("\\", "\\\\").replace("'", "\'").replace('"', "\"")
+                for item in item_names
+            ]
+            expr_conditions.append(f"item_name in {json.dumps(item_names)}")
+        expr = " and ".join(expr_conditions) if expr_conditions else None
+        # ==================== AI修改 结束 ====================
         reqs = create_reqs(
             dense_data=dense_data,
             sparse_data=sparse_data,
@@ -81,15 +110,26 @@ class NodeSearchEmbeddingHyde(NodeBase):
             sparse_param={
                 "metric_type": "IP"
             },
-            expr=f"item_name in {json.dumps(item_names)}"
+            # ==================== AI修改 开始 ====================
+            expr=expr
+            # ==================== AI修改 结束 ====================
         )
 
         res = my_hybrid_search(
             collection_name=collection_name,
             reqs=reqs,
             ranker=[0.9, 0.1],
-            output_fields=["id", "title", "file_title", "content", "item_name"],
-            limit=10
+            # ==================== AI修改 开始 ====================
+            # 普通文档的 HyDE 仍查询旧 chunks collection；教育意图在上方已跳过 HyDE，
+            # 因此这里只请求普通表稳定存在的基础字段，兼容旧 collection schema。
+            output_fields=["id", "title", "file_title", "content", "item_name",
+                           "content_type", "source_name", "code", "q_type"],
+            # ==================== AI修改 结束 ====================
+            # ==================== AI修改 开始 ====================
+            # limit 10 -> 20 (提升召回):与node_search_embedding保持一致,
+            # 扩大HyDE这一路的候选池,让RRF融合和rerank有足够的候选可选
+            limit=20
+            # ==================== AI修改 结束 ====================
         )
         # print(convert_to_json(res))
 

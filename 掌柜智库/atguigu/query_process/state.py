@@ -30,3 +30,8 @@ class QueryGraphState(TypedDict):
     item_names: List[str]  # 提取出的商品名称
     rewritten_query: str  # 改写后的问题
     history: list  # 历史对话记录
+    # ==================== AI修改 开始 ====================
+    # 意图类型：chitchat(闲聊) / course(课程检索) / question(题库检索) / doc(文档检索) / knowledge(通用知识库问答)
+    # 用于意图路由分流：闲聊直达答案节点，课程/题库按 content_type 过滤检索，其余走完整三路检索
+    query_type: str
+    # ==================== AI修改 结束 ====================

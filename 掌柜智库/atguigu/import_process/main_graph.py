@@ -13,6 +13,10 @@ from atguigu.import_process.nodes.node_import_milvus import NodeImportMilvus
 from atguigu.import_process.nodes.node_item_name_recognition import NodeItemNameRecognition
 from atguigu.import_process.nodes.node_md_img import NodeMDImg
 from atguigu.import_process.nodes.node_pdf_to_md import NodePDFToMD
+# ==================== AI修改 开始 ====================
+# 教育实战新增：docx 转换节点
+from atguigu.import_process.nodes.node_docx_to_md import NodeDocxToMD
+# ==================== AI修改 结束 ====================
 from atguigu.import_process.state import ImportGraphState
 from atguigu.tool.logger import logger
 
@@ -32,12 +36,21 @@ class MainGraphRunner:
         self.builder.add_node(NodeItemNameRecognition.name, NodeItemNameRecognition())
         self.builder.add_node(NodeBGEEmbedding.name, NodeBGEEmbedding())
         self.builder.add_node(NodeImportMilvus.name, NodeImportMilvus())
+        # ==================== AI修改 开始 ====================
+        # 教育实战新增：docx 转换节点
+        self.builder.add_node(NodeDocxToMD.name, NodeDocxToMD())
+        # ==================== AI修改 结束 ====================
 
     def after_entry_router(self, state: ImportGraphState):
         if state.get("is_md_read_enabled"):
             return NodeMDImg.name
         if state.get("is_pdf_read_enabled"):
             return NodePDFToMD.name
+        # ==================== AI修改 开始 ====================
+        # 教育实战新增：docx 分支
+        if state.get("is_docx_read_enabled"):
+            return NodeDocxToMD.name
+        # ==================== AI修改 结束 ====================
         else:
             return END
 
@@ -46,9 +59,17 @@ class MainGraphRunner:
         self.builder.add_edge(START, NodeEntry.name)
         self.builder.add_conditional_edges(NodeEntry.name, self.after_entry_router, {
             NodeMDImg.name: NodeMDImg.name,
-            NodePDFToMD.name: NodePDFToMD.name
+            NodePDFToMD.name: NodePDFToMD.name,
+            # ==================== AI修改 开始 ====================
+            # 教育实战新增：docx 路由映射
+            NodeDocxToMD.name: NodeDocxToMD.name
+            # ==================== AI修改 结束 ====================
         })
         self.builder.add_edge( NodePDFToMD.name, NodeMDImg.name)
+        # ==================== AI修改 开始 ====================
+        # 教育实战新增：docx转换完md后与pdf一样,汇入 node_md_img 统一走后续链路
+        self.builder.add_edge(NodeDocxToMD.name, NodeMDImg.name)
+        # ==================== AI修改 结束 ====================
         self.builder.add_edge(NodeMDImg.name, NodeDocumentSplit.name)
         self.builder.add_edge(NodeDocumentSplit.name, NodeItemNameRecognition.name)
         self.builder.add_edge(NodeItemNameRecognition.name, NodeBGEEmbedding.name)

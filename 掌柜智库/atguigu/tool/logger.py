@@ -36,6 +36,20 @@ if not logger.handlers:
     #添加日志输出地点
     logger.addHandler(handler)
 
+# ==================== AI修改 开始 ====================
+# 日志降噪: httpx/openai/urllib3 等第三方库在 DEBUG 级别会刷出大量请求日志
+# (含 base64 图片完整报文), 真实的 pipeline traceback 瞬间被淹没, 用户根本看不到。
+# 把这些噪音库统一压到 WARNING, 只保留自己的业务日志在 DEBUG/INFO。
+# 教训: 06文件导入失败时, 控制台全是 httpx DEBUG 行, 异常 traceback 被
+# 冲到看不见, 用户报告"控制台没有找到报错信息"。
+_noise_loggers = [
+    "httpx", "httpcore", "openai", "urllib3", "asyncio",
+    "httpx._client", "httpx._config", "openai._base_client",
+]
+for _name in _noise_loggers:
+    logging.getLogger(_name).setLevel(logging.WARNING)
+# ==================== AI修改 结束 ====================
+
 if __name__ == '__main__':
     logger.debug('This is a debug message')
     logger.info('This is an info message')

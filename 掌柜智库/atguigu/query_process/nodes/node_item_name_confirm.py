@@ -19,7 +19,7 @@ class NodeItemNameConfirm(NodeBase):
     """
     节点功能：确认用户问题中的核心商品名称
     实现思路:
-        1.获取最近的10条历史会话记录,整理成一个字符串
+        1.获取最近的20条历史会话记录,整理成一个字符串
         2.交给大模型进行产品名称确认,并重写用户问题
         3.将大模型返回的产品名称确认向量化并匹配主体识别向量库进行混合检索
         4.拿到原始商品名称,模型确认商品名称,以及匹配的分数,根据是否存在,以及分数大小,决定是否替换用户问题中的商品名称
@@ -29,32 +29,123 @@ class NodeItemNameConfirm(NodeBase):
     # 覆盖基类的 name 属性，标识节点名称
     name: str = "node_item_name_confirm"
 
+    # ==================== AI修改 开始 ====================
+    # 历史窗口大小统一读取配置，默认20条，约等于10轮完整问答。
+    # 统一配置后，意图识别和答案生成不会出现记忆窗口不一致。
+    HISTORY_LIMIT: int = ModelConfig.QUERY_HISTORY_LIMIT
+    # ==================== AI修改 结束 ====================
+
+    # LLM客户端懒加载缓存: 原来每次process都init_chat_model重新建立客户端
+    # (每次查询白白多一次连接开销),改成类级缓存只初始化一次,后续复用
+    _llm = None
+
+    # ==================== AI修改 开始 ====================
+    # 元对话问题检测: "我刚才问了什么/我们聊了什么/你还记得吗" 这类关于"对话本身"的问题
+    # 直接路由 chitchat, 既不调LLM也不检索——否则会被知识库检索内容干扰答非所问
+    # (用户实测: 问"我刚才问了什么"被检索到产品手册内容, 回答跑偏到好几轮前)。
+    # 命中后由 answer_output 的闲聊分支带着完整历史回答, 准确又省时。
+    _META_PATTERNS = [
+        r"我刚才问(的|了|过)?(是)?(什么|啥)",
+        r"(刚才|之前|上一轮)(我|我们|咱们)?(问|说|聊)(的|了|过)?(是)?(什么|啥)",
+        r"(我们|咱们)(刚才|之前|刚刚)(聊|说|谈)(的|了|过)?(是)?(什么|啥)",
+        r"刚才(聊|说)(的|了|过)?(是)?(什么|啥)",
+        r"上一句(说|问)(的|过)?(是)?(什么|啥)",
+        r"(你还记得|你记得)(我刚才|之前|我们|吗)",
+        r"前面(问|聊)(的|了|过)?(是)?(什么|啥)",
+        r"(上一轮|之前|前面)(说|问|聊)(的|过)?(那个|那些|的事|的问题|的话题)",
+    ]
+    _META_Q_RE = re.compile("|".join(_META_PATTERNS))
+    # ==================== AI修改 结束 ====================
+
     def process(self, state: QueryGraphState):
         """
         节点逻辑
         :param state: 工作流状态对象
         :return: 更新后的状态对象
         """
-        # 一.获取最近的10条历史会话记录,整理成一个字符串
+        # 一.获取最近的20条历史会话记录,整理成一个字符串
         history_content, message_id, original_query, session_id = self.make_history_to_str(state)
+        # ==================== AI修改 开始 ====================
+        # 元对话问题短路(在LLM调用之前判断): 命中直接返回chitchat,
+        # 省掉一次LLM调用+检索, answer_output会带完整历史回答
+        if self._META_Q_RE.search(original_query or ""):
+            logger.info(f"元对话问题命中, 直接走闲聊分支: {original_query[:30]}")
+            return {
+                "message_id": message_id,
+                "original_query": original_query,
+                "rewritten_query": original_query,
+                "item_names": [],
+                "answer": "",
+                "query_type": "chitchat",
+                # ==================== AI修改 开始 ====================
+                # 元对话也读取扩大后的记忆窗口，才能回答“刚才聊了什么”。
+                "history": get_recent_history_list(session_id, limit=self.HISTORY_LIMIT)
+                # ==================== AI修改 结束 ====================
+            }
+        # ==================== AI修改 结束 ====================
         # 二.交给大模型进行产品名称确认,并判断输出结果格式,并进行解析拿到item_name和rewritten_query
-        item_name_list, rewritten_query = self.send_to_llm_and_parse_item_name(history_content, original_query)
+        # ==================== AI修改 开始 ====================
+        # 解析函数升级为三元组返回(query_type, item_name_list, rewritten_query)
+        # 1) 输出query_type意图类型 2) JSON解析失败降级为chitchat而不是raise 3) LLM调用失败也降级
+        query_type, item_name_list, rewritten_query = self.send_to_llm_and_parse_item_name(history_content, original_query)
+
+        # 闲聊短路：不是知识库问题，或识别不出任何主体，直接走聊天分支，不检索不走向量
+        if query_type == "chitchat" or not item_name_list and query_type not in ("course", "question"):
+            return {
+                "message_id": message_id,          # 反馈信息的id
+                "original_query": original_query,  # 原始问题
+                "rewritten_query": original_query, # 闲聊不需要改写
+                "item_names": [],                  # 无主体
+                "answer": "",                      # answer留空,让answer_output走流式聊天分支
+                "query_type": "chitchat",
+                # ==================== AI修改 开始 ====================
+                # 闲聊分支与知识库分支共用同一记忆窗口。
+                "history": get_recent_history_list(session_id, limit=self.HISTORY_LIMIT)  # 历史记录
+                # ==================== AI修改 结束 ====================
+            }
+
         # 三.意图识别item_name匹配混合搜索主体识别,拿到{意图item_name,主体item_name,匹配分数}
-        all_searched_item_name_list = self.item_match_and_get_all_search_item_list(item_name_list)
+        # ==================== AI修改 开始 ====================
+        # 全意图永不拦截修复: 用户反馈"说说fastapi"被"请确认您要咨询的商品是xxx"卡断
+        # 原因: doc/knowledge意图走align_and_filter_for_distance严格对齐,主体库里
+        # 只有课程系列名/题库名,匹配不上技术名词就触发确认/无法识别的拦截分支
+        # 修复: 所有意图统一软匹配(分数>=0.5采纳作为过滤条件,匹配不上就不加过滤
+        # 走全库自由检索),让检索和重排去决定相关性,绝不拦截用户
+        if item_name_list:
+            all_searched_item_name_list = self.item_match_and_get_all_search_item_list(item_name_list)
+            matched = [item.get("search_item_name") for item in all_searched_item_name_list
+                       if item.get("score", 0.0) >= 0.5]
+            final_item_names = list(dict.fromkeys(matched))  # 去重保序
+        else:
+            # 没识别出主体:宽泛检索,不加item_name过滤
+            final_item_names = []
+        answer = ""  # 永不产生确认类反馈,answer为空让流程正常进检索
+        # ==================== AI修改 结束 ====================
+
         # 四.对齐和过滤:根据匹配的分数, 根据是否存在, 以及分数大小, 决定最终返回的item_name以及answer变量,判断是否反馈给用户需要确认
-        answer, final_item_names = self.align_and_filter_for_distance(all_searched_item_name_list)
-        # 五.保存反馈历史,以及回填最近10条历史记录 IMPROVE限制了只能在一个会话窗口问一种问题,否则会污染历史
+        # answer, final_item_names = self.align_and_filter_for_distance(all_searched_item_name_list)
+        # ==================== AI修改 开始 ====================
+        # 原IMPROVE: 限制了只能在一个会话窗口问一种问题,否则会污染历史
+        # 已修复: judge_answer_and_backfill_history已改为只回填本轮message_id
+        # (不再批量覆盖最近20条),换主体提问不会把历史里的旧主体改掉
+        # 五.保存反馈历史,以及回填本轮历史记录
         message_id = self.judge_answer_and_backfill_history(answer, final_item_names, message_id, rewritten_query,session_id)
 
 
+        # ==================== AI修改 开始 ====================
         return {
             "message_id":message_id,#反馈信息的id
             "original_query":original_query,#原始问题
             "rewritten_query":rewritten_query,#重写的问题
             "item_names":final_item_names,#最终确定的商品名称
             "answer":answer,#反馈信息
-            "history":get_recent_history_list(session_id,limit=10)#历史记录
+            "query_type":query_type,#意图类型,路由器据此分流
+            # ==================== AI修改 开始 ====================
+            # 返回状态中的历史也使用统一配置，避免前端/后续节点拿到旧窗口。
+            "history": get_recent_history_list(session_id, limit=self.HISTORY_LIMIT)  # 历史记录
+            # ==================== AI修改 结束 ====================
         }
+        # ==================== AI修改 结束 ====================
 
     def make_history_to_str(self, state: QueryGraphState) -> tuple[str, str, str, Any]:
 
@@ -70,10 +161,16 @@ class NodeItemNameConfirm(NodeBase):
             raise Exception("用户原始问题不存在,请输入您的问题")
 
         # 将该问题存入历史记录,返回的是InsertOne的inserted_id也就是mongo自动生成的_id
-        message_id = add_or_update_history(session_id, "user", original_query)
+        message_id = add_or_update_history(session_id, "user", original_query, msg_type="qa")
 
-        # 从当前session_id中抽取前10条历史消息进行llm意图识别的原料,IMPROVE 局限性很高,换个窗口历史就是0
-        history_list = get_recent_history_list(session_id=session_id, limit=10)
+        # ==================== AI修改 开始 ====================
+        # 原IMPROVE: 从当前session_id中抽取前20条历史消息,局限性很高,换个窗口历史就是0
+        # 说明与改进: "换窗口历史归零"是多轮会话的语义设计——session_id就是一个会话,
+        # 新开窗口=新会话,历史隔离是正确的(否则A会话的问题会污染B会话的意图识别)。
+        # 真正的问题是10这个魔法数字散落各处且不可调,现统一抽成类常量HISTORY_LIMIT:
+        # 1)意图识别原料的取数条数 2)答案生成时的历史窗口,两处保持一致
+        # 想让模型"记得更久"改这一个常量即可
+        history_list = get_recent_history_list(session_id=session_id, limit=self.HISTORY_LIMIT)
 
         history_content = ""
         for history in history_list:
@@ -83,16 +180,45 @@ class NodeItemNameConfirm(NodeBase):
             history_content += content
         return history_content, message_id, original_query, session_id
 
-    def send_to_llm_and_parse_item_name(self, history_content: str, original_query: str) -> tuple[list[Any], Any]:
+    # ==================== AI修改 开始 ====================
+    # 稳定解析LLM返回的JSON：去markdown壳 -> json.loads -> 正则提取兜底
+    def extract_json_safe(self, text: str):
+        if not text:
+            return None
+        text = text.strip()
+        # 去掉 ```json / ```JSON / ``` 三种壳(开头的和结尾的分开去,大小写都防)
+        if text.startswith("```"):
+            text = re.sub(r"^```(json|JSON)?\s*", "", text)
+            text = re.sub(r"```\s*$", "", text).strip()
+        # 第一次直接解析
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # 兜底：正则抓取第一个 {...} JSON对象(不管前后有什么废话都能抓到)
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+        return None
 
-        #     IMPROVE 每次运行都要重新初始化
-        llm = init_chat_model(
-            model=ModelConfig.LLM_MODEL_NAME,
-            model_provider="openai",
-            api_key=ModelConfig.VL_MODEL_API_KEY,
-            base_url=ModelConfig.VL_MODEL_BASE_URL,
-            temperature=ModelConfig.VL_MODEL_TEMPERATURE
-        )
+    def send_to_llm_and_parse_item_name(self, history_content: str, original_query: str) -> tuple[str, list[Any], Any]:
+        # ==================== AI修改 开始 ====================
+        # 原IMPROVE: 每次运行都要重新初始化
+        # 已改进: init_chat_model改为类级懒加载缓存,首次调用初始化,之后直接复用,
+        # 省掉每次查询重建HTTP客户端/鉴权的开销
+        if self._llm is None:
+            self._llm = init_chat_model(
+                model=ModelConfig.LLM_MODEL_NAME,
+                model_provider="openai",
+                api_key=ModelConfig.MODA_API_KEY,
+                base_url=ModelConfig.VL_MODEL_BASE_URL,
+                temperature=ModelConfig.VL_MODEL_TEMPERATURE
+            )
+        llm = self._llm
+        # ==================== AI修改 结束 ====================
         messages = [
             {"role": "system", "content": ITEM_NAME_EXTRACT_SYSTEM_PROMPT},
             {"role": "user", "content": ITEM_NAME_EXTRACT_TEMPLATE.format(
@@ -100,31 +226,38 @@ class NodeItemNameConfirm(NodeBase):
                 original_query=original_query)
              }]
 
-        res = llm.invoke(input=messages)
-        # 拿到大模型的意图识别,结果格式不可控,使用try模块定位异常
         try:
-            res_json = res.content
-            # 如果输出的是markdown格式的json,将其转化为
-            if res_json.startswith("```json"):
-                res_json = res_json.replace("```json", "").replace("```", "")
-            # 反序列化
-            res_dict = json.loads(res_json)
-            # 拿到意图识别和重写问题
-            item_names = res_dict.get("item_names")
-            rewritten_query = res_dict.get("rewritten_query")
-            # 判断意图识别是否存在,如果存在转换为列表
-            if item_names:
-                item_name_list = [item_name.replace(" ", "").replace("\n", "").replace("\t", "")
-                                  for item_name in item_names]
-            else:
-                item_name_list = []
-            # 判断rewritten_query是否存在,如果不存在,就是原始问题覆盖
-            if not rewritten_query:
-                rewritten_query = original_query
+            res = llm.invoke(input=messages)
+            res_dict = self.extract_json_safe(res.content)
         except Exception as e:
-            logger.error("模型输出格式异常", e)
-            raise e
-        return item_name_list, rewritten_query
+            # LLM调用本身失败(网络/超时),降级为闲聊而不是整链崩溃
+            logger.error(f"意图识别LLM调用失败,降级为chitchat: {e}")
+            return "chitchat", [], original_query
+
+        # 解析失败同样降级为闲聊——大不了当普通对话回答,绝不报错
+        if not isinstance(res_dict, dict):
+            logger.warning(f"意图识别JSON解析失败,原始返回:{res.content},降级为chitchat")
+            return "chitchat", [], original_query
+
+        # 拿到意图类型并校验合法性
+        query_type = res_dict.get("query_type", "knowledge")
+        if query_type not in ("chitchat", "course", "question", "doc", "knowledge"):
+            query_type = "knowledge"
+
+        # 拿到意图识别和重写问题
+        item_names = res_dict.get("item_names")
+        if item_names:
+            item_name_list = [item_name.replace(" ", "").replace("\n", "").replace("\t", "")
+                              for item_name in item_names]
+        else:
+            item_name_list = []
+
+        rewritten_query = res_dict.get("rewritten_query")
+        if not rewritten_query:
+            rewritten_query = original_query
+
+        return query_type, item_name_list, rewritten_query
+    # ==================== AI修改 结束 ====================
 
     def item_match_and_get_all_search_item_list(self, item_name_list: list[Any]) -> list[Any]:
         # 1.将准备好的意图识别列表向量化,返回的是一个字典列表,{"dense":[[],[],[]],"sparse":[[],[],[]]}
@@ -185,7 +318,14 @@ class NodeItemNameConfirm(NodeBase):
             final_item_names = confirm_item_names
             answer = ""
         elif option_item_names:
-            final_item_names = [] #question 这里item为啥为空?只能为空?
+            # ==================== AI修改 开始 ====================
+            # 原question: 这里item为啥为空?只能为空?
+            # 答案与改进: 不是只能为空。原设计置空是为了"先确认再检索"的保守策略,
+            # 但置空意味着本轮完全不检索,用户必须再回一句才能拿到东西,体验割裂。
+            # 改进: 直接把模糊候选放进final_item_names,检索时对所有候选同时过滤,
+            # 用户确认的同时下一轮已经能拿到相关内容,确认与检索并行不冲突
+            # (注: 当前主流程已改用统一软匹配,此方法保留作为兼容备用)
+            final_item_names = option_item_names
             answer = f"请确认您要咨询的商品是哪一个{','.join(option_item_names)}"
         else:
             final_item_names = []
@@ -200,12 +340,14 @@ class NodeItemNameConfirm(NodeBase):
     def judge_answer_and_backfill_history(self, answer: str, final_item_names: list[Any], message_id, rewritten_query,session_id) -> Any:
         if answer:
             # 保存这个反馈信息到历史记录中
-            message_id = add_or_update_history(session_id, "assistant", answer)
-        # QUESTION查询10条历史记录,为啥取10条?这样回填不会污染历史?为什么不是根据message_id更新
-        history_list = get_recent_history_list(session_id, limit=10)
-        ids = [history.get("_id") for history in history_list]
-        if ids:
-            update_item_names_and_rewritten_query(ids, item_names=final_item_names, rewritten_query=rewritten_query)
+            message_id = add_or_update_history(session_id, "assistant", answer, msg_type="chat")
+        # ==================== AI修改 开始 ====================
+        # 原QUESTION: 查询20条历史记录,为啥取20条?这样回填不会污染历史?为什么不是根据message_id更新
+        # 已修复: 1)20条抽成HISTORY_LIMIT常量(见类属性,附选型理由)
+        # 2)回填从"批量覆盖最近20条"改为只更新本轮message_id,彻底消灭历史污染
+        if message_id:
+            update_item_names_and_rewritten_query([message_id], item_names=final_item_names, rewritten_query=rewritten_query)
+        # ==================== AI修改 结束 ====================
         return message_id
 
 

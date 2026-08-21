@@ -1,5 +1,4 @@
-# atguigu/import_process/nodes/node_document_split2.py
-import json
+# atguigu/import_process/nodes/node_document_split.py
 import re
 from pathlib import Path
 
@@ -13,21 +12,44 @@ from atguigu.tool.convert_to_json import convert_to_json
 
 class NodeDocumentSplit(NodeBase):
     """
-    目的:将处理好图片的md文档进行切分成chunk
+    目的:将处理好图片的md文档按"标题树"切分成chunk(树形切分)
     一.拿到文档内容
         1.拿路径,拿标题,文件流拿文档
-    二、切分文档内容后合并成按标题切分的区域块(粗切)
-        1.统一换行符
-        2.先按行大切分,正则匹配每行是代码块还是标题,通过切片合并成按标题划分的区域快,
-        3.最后一个块
-    三、使用递归分割器对每个区域快再次进行切分(精切)
-        1.剥离每一区域的标题
-        2.判断表格是否存在
-        3.递归切割器切分并加入索引(溯源)
-        4.将切分好的chunks文件流写入json文件备份
+    二、树形粗切:按标题层级解析成"面包屑"区块
+        1.统一换行符,按行切分
+        2.用栈维护当前标题层级路径:遇到N级标题就把栈中>=N级的标题弹出再压入,
+          这样每个区块都能拿到完整的祖先路径,如"第一章 安装 > 1.2 电源线"
+        3.代码块内的#号不当作标题(沿用原有的代码块开关逻辑)
+    三、兄弟小节合并
+        正文极短的兄弟小节(如只有一句话的小节)单独成chunk会导致向量信息量不足,
+        同一父标题下的连续小节自动合并
+    四、递归精切(每个区块内部再切)
+        1.表格不切(保持表格完整性)
+        2.递归切割器切分并加入part索引(溯源)
+        3.每个chunk的content = "面包屑标题路径 + 正文",
+          向量化时自带完整层级上下文,查询"电源线相关"也能命中"安装>电源线"
     """
 
     name = "node_document_split"
+
+    # ==================== AI修改 开始 ====================
+    # 树形切分核心参数
+    # 精切chunk上限(字符),与原逻辑一致
+    CHUNK_SIZE = 300
+    # 相邻chunk重叠字符数:原来是2,等于没有重叠——句子被切断处上下文直接丢失,
+    # 查询恰好落在切断点时两边都召回不全。50字符约1~2句话,保证边界信息双份保留
+    CHUNK_OVERLAP = 50
+    # 正文短于该值的兄弟小节会被合并进前一个同级小节,避免碎片chunk
+    MERGE_MIN_BODY = 60
+    # 区块"整块保留"的绝对上限(字符)。超过该值即使是表格也必须再切。
+    # 教训(06文档翻车现场): 06文档内嵌了文档切分节点的完整源码(12985字符),
+    # 代码里恰好有 "<table" 字面量,命中表格豁免条件被整块保留——
+    # 12985字符的巨块送进BGE-M3(最长8192token)后,在6G显存的显卡上
+    # 直接CUDA OOM甚至原生段错误(Windows事件日志0xc0000005,进程无任何报错就死了),
+    # 导致06文件反复导入失败而其他18篇文档全部成功。
+    # 该上限远大于CHUNK_SIZE,小表格仍然整块保留不受影响。
+    MAX_WHOLE_SECTION = 1500
+    # ==================== AI修改 结束 ====================
 
     def process(self, state: ImportGraphState):
 
@@ -46,104 +68,184 @@ class NodeDocumentSplit(NodeBase):
             #.stem去掉路径下最后一段的文件名的扩展名
             file_title = md_path_obj.stem
 
-        with md_path_obj.open("r", encoding="utf-8") as f:
-            md_content = f.read()
-        # 二、切分文档内容后合并成按标题切分的区域块
-        #1.统一换行符,所有的操作系统都支持\n换行
+        # ==================== AI修改 开始 ====================
+        # 图片输出断链修复: 优先使用 node_md_img 已经替换好图片的 md_content
+        # (原文里的 <img src="images/xxx.jpg"> 已被替换成 ![摘要](minio_url))。
+        # 原逻辑(课程遗留bug)无视 state["md_content"], 每次都从磁盘重读原始
+        # md_path —— 图片摘要和MinIO URL只写进了 _backup.md 和返回值,
+        # 从未进入切分链路, 导致 chunk 里全是 <img src="images/xxx.jpg"> 死链,
+        # 答案生成节点用 markdown 正则一张URL都提取不到, 前端永远不显示图。
+        # 现在优先取 state["md_content"], 取不到(如单独调试本节点)才回退读磁盘。
+        md_content = state.get("md_content") or ""
+        if not md_content:
+            with md_path_obj.open("r", encoding="utf-8") as f:
+                md_content = f.read()
+        # ==================== AI修改 结束 ====================
+        # 统一换行符,所有的操作系统都支持\n换行
         md_content = md_content.replace("\r\n", "\n").replace("\r", "\n")
-
-        #2.按行切分
         md_lines = md_content.split("\n")
 
-        #3.正则匹配,markdown中代码块格式至少3个~或`
-        code_pattern = r"(`{3,}|~{3,})"
-        title_pattern = r"^\s*#{1,6}\s+.+"
-        is_in_block = False
-        marker = None
-        current_idx = 0
-        section_list=[]
-        for idx , line in enumerate(md_lines):
-            line = line.strip()
-            #匹配到了代码块的符号
-            #re.match只会在字符串的开头进行匹配,每行的开头必须匹配正则,否则不匹配
-            if re.match(code_pattern, line):
-                logger.info("匹配到了代码块")
-                if not is_in_block:
-                    logger.info("进入代码块")
-                    is_in_block = True
-                    marker = re.match(code_pattern, line).group(1)
-                    # print(marker)
-                else:
-                    if marker == re.match(code_pattern, line).group(1):
-                        logger.info("退出代码块")
-                        is_in_block = False
-                        marker = None
+        # ==================== AI修改 开始 ====================
+        # 二、树形粗切:解析标题树,产出带面包屑路径的区块列表
+        sections = self._parse_sections(md_lines, file_title)
 
-            if not is_in_block and re.match(title_pattern,line):
-                logger.info("匹配到了标题")
-                #切片拿到该标题到上一个标题的前文
-                temp_list = md_lines[current_idx:idx]
-                content = "\n".join(temp_list)
-                section_dict = {
-                    #此处一定得是content进行判断,因为startswith只可以被字符串调用,不可以是列表
-                    "title":temp_list[0] if content.strip().startswith("#") else "自定义标题",
-                    "content":content,
-                    "file_title": file_title
-                }
-                section_list.append(section_dict)
-                #重置idx,下次从这个idx开始切分
-                current_idx = idx
+        # 三、兄弟小节合并:消除信息量不足的碎片区块
+        sections = self._merge_small_sections(sections)
 
-            #按向前切片原则会漏掉最后一个标题的下文,拿到所有按标题切分的区域块
-        section_list.append({
-                "title":md_lines[current_idx],
-                "content":"\n".join(md_lines[current_idx:]),
-                "file_title": file_title
-            })
-        # 三、递归切割器
-        spliter = RecursiveCharacterTextSplitter(
-            separators = ["\n\n", "\n", "。", "！", "？", "；", ".", "!", "?", ";", " "],
-            chunk_size = 300,
-            chunk_overlap = 2
-        )
-        final_section_list= []
-        for section in section_list:
-            title = section.get("title")
-            content = section.get("content")
-            real_content = content[len(title):]if content.strip().startswith("#") else  content
-            if len(real_content)<=300:
-                final_section_list.append(
-                    {
-                        **section,
-                        "part":0
-                    }
-                )
-                continue
-            if "<table" in real_content:
-                final_section_list.append(
-                    {
-                        **section,
-                        "part": 0
-                    }
-                )
-                continue
-
-            splite_chunk_list = spliter.split_text(real_content)
-            for idx , splite_chunk in enumerate(splite_chunk_list,start = 1):
-                final_section_list.append(
-                    {
-                        "title": title,
-                        "file_title":file_title,
-                        "content":title +"\n\n"+ splite_chunk,
-                        "part": idx
-                    }
-                )
-        # file_json = convert_to_json(final_section_list)
-        # with open(r"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\doc\chunk.json", "w", encoding="utf-8") as f:
-        #     f.write(file_json)
+        # 四、递归精切:区块内部超过上限再切,切完拼上面包屑前缀
+        final_section_list = self._fine_split(sections, file_title)
+        # ==================== AI修改 结束 ====================
 
         return {"chunks": final_section_list}
 
+    # ==================== AI修改 开始 ====================
+    def _parse_sections(self, md_lines, file_title):
+        """
+        树形粗切:逐行扫描,用栈维护标题层级路径。
+        返回区块列表,每个区块:
+            breadcrumb: 面包屑路径,如"第一章 安装 > 1.2 电源线"(纯文本,不带#号)
+            parent_key: 父路径(去掉最后一级),用于判断两个区块是不是"兄弟"
+            body:       该标题下的正文(不含标题行本身)
+        """
+        code_pattern = r"(`{3,}|~{3,})"
+        # 捕获两组:第1组是#号个数(即标题层级),第2组是标题文字
+        heading_pattern = r"^(#{1,6})\s+(.+)$"
+
+        sections = []
+        # 栈元素: (标题层级, 标题文字)。栈底到栈顶就是当前的"祖先路径"
+        heading_stack = []
+        body_lines = []
+        is_in_block = False
+        marker = None
+
+        def _flush():
+            """把当前累积的正文收尾成一个区块"""
+            body = "\n".join(body_lines).strip()
+            # 空正文(纯空白)的区块直接丢弃,如标题紧跟标题的情况
+            if not body:
+                return
+            if heading_stack:
+                breadcrumb = " > ".join(t for _, t in heading_stack)
+                # 兄弟判定键:父路径。len>1才有父,否则父路径为空串
+                parent_key = " > ".join(t for _, t in heading_stack[:-1]) if len(heading_stack) > 1 else ""
+            else:
+                # 第一个标题之前的内容(文档引言),用文件名当面包屑
+                breadcrumb = file_title
+                # 引言区单独一个parent_key,防止和一级标题区块误合并
+                parent_key = file_title
+            sections.append({
+                "breadcrumb": breadcrumb,
+                "parent_key": parent_key,
+                "body": body,
+            })
+
+        for raw_line in md_lines:
+            line = raw_line.strip()
+            # 代码块开关逻辑(沿用原实现):进入/退出```或~~~包裹的代码块
+            code_match = re.match(code_pattern, line)
+            if code_match:
+                if not is_in_block:
+                    is_in_block = True
+                    marker = code_match.group(1)
+                elif marker == code_match.group(1):
+                    is_in_block = False
+                    marker = None
+                # 代码块的内容行原样保留在正文里
+                body_lines.append(raw_line)
+                continue
+
+            # 代码块内的#号不是标题
+            heading_match = None if is_in_block else re.match(heading_pattern, line)
+            if heading_match:
+                # 先收尾上一个区块
+                _flush()
+                body_lines = []
+                level = len(heading_match.group(1))
+                title_text = heading_match.group(2).strip()
+                # 核心树形逻辑:遇到N级标题,弹出栈中所有>=N级的标题再压入自己
+                # 例:栈为[1章,2节],来了一个2级标题->弹出2节压入新2节(同级替换)
+                #     来了一个3级标题->直接压入(成为2节的子标题)
+                while heading_stack and heading_stack[-1][0] >= level:
+                    heading_stack.pop()
+                heading_stack.append((level, title_text))
+            else:
+                body_lines.append(raw_line)
+
+        # 收尾最后一个区块(原有的"漏掉最后一块"问题在这里统一解决)
+        _flush()
+        return sections
+
+    def _merge_small_sections(self, sections):
+        """
+        兄弟小节合并:同一父路径下,正文极短的区块并入前一个兄弟区块。
+        碎片chunk(比如整节只有一句"详见附录")单独向量化时信息量不足,
+        相似度必然偏低,检索时永远排不上来,还会挤占TopK名额。
+        表格区块不参与合并,保持表格粒度独立完整。
+        """
+        merged = []
+        for sec in sections:
+            can_merge = (
+                merged
+                and sec["parent_key"] == merged[-1]["parent_key"]
+                and len(sec["body"]) < self.MERGE_MIN_BODY
+                and "<table" not in sec["body"]
+                and "<table" not in merged[-1]["body"]
+            )
+            if can_merge:
+                merged[-1]["body"] = (merged[-1]["body"] + "\n\n" + sec["body"]).strip()
+            else:
+                # dict()浅拷贝,防止合并时改到原始解析结果
+                merged.append(dict(sec))
+        return merged
+
+    def _fine_split(self, sections, file_title):
+        """
+        递归精切:区块内部超过CHUNK_SIZE再细切,每个chunk的content都带上面包屑前缀。
+        content = "面包屑路径\n\n正文片段"
+        这样向量化/重排/LLM阅读时,每个chunk都自带"我从哪来"的层级上下文。
+        """
+        # ==================== AI修改 开始 ====================
+        # 分隔符在 "\n" 之后、句读之前插入 "</tr>":
+        # 真实的大表格(超上限必须切时)优先在行边界</tr>处断开,
+        # 不会把表格从单元格中间拦腰截断;普通文本碰不到</tr>不受影响。
+        spliter = RecursiveCharacterTextSplitter(
+            separators=["\n\n", "\n", "</tr>", "。", "！", "？", "；", ".", "!", "?", ";", " "],
+            chunk_size=self.CHUNK_SIZE,
+            chunk_overlap=self.CHUNK_OVERLAP,
+        )
+        final_section_list = []
+        for sec in sections:
+            breadcrumb = sec["breadcrumb"]
+            body = sec["body"]
+            # ==================== AI修改 开始 ====================
+            # 整块保留的条件收紧为两条,同时满足才行:
+            #   1.区块确实足够短(<=CHUNK_SIZE) —— 原有逻辑
+            #   2.含表格的区块额外放宽到 MAX_WHOLE_SECTION(小表格保持完整性)
+            # 修复06文档bug: 原条件是 "<table" in body 就整块保留且【无长度上限】,
+            # 06文档4.4节内嵌了切分节点完整源码(12985字符),源码文本里恰好含
+            # "<table"字面量 → 被误判成表格 → 整块保留 → 巨块打爆嵌入模型。
+            # 现在超过MAX_WHOLE_SECTION的区块无论含不含<table都必须再切。
+            is_small = len(body) <= self.CHUNK_SIZE
+            is_small_table = "<table" in body and len(body) <= self.MAX_WHOLE_SECTION
+            if is_small or is_small_table:
+                final_section_list.append({
+                    "title": breadcrumb,
+                    "content": f"{breadcrumb}\n\n{body}",
+                    "file_title": file_title,
+                    "part": 0,
+                })
+                continue
+            # ==================== AI修改 结束 ====================
+            split_chunk_list = spliter.split_text(body)
+            for idx, split_chunk in enumerate(split_chunk_list, start=1):
+                final_section_list.append({
+                    "title": breadcrumb,
+                    "content": f"{breadcrumb}\n\n{split_chunk}",
+                    "file_title": file_title,
+                    "part": idx,
+                })
+        return final_section_list
+    # ==================== AI修改 结束 ====================
 
 
 if __name__ == '__main__':

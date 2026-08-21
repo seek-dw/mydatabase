@@ -5,11 +5,18 @@
 
 定义统一的节点接口规范，提供通用功能
 """
+import time
 from abc import abstractmethod, ABC
 
 from atguigu.query_process.state import QueryGraphState
 from atguigu.tool.logger import logger
-from atguigu.tool.task_utils import put_data, get_task_info, add_running_task, add_done_task
+from atguigu.tool.task_utils import (
+    put_data,
+    get_task_info,
+    add_running_task,
+    add_done_task,
+    add_node_duration,
+)
 
 
 class NodeBase(ABC):
@@ -31,17 +38,30 @@ class NodeBase(ABC):
             logger.info(f"{self.name} 开始执行...")
 
             task_id = state.get("task_id")
+            # ==================== AI修改 开始 ====================
+            # 查询节点从进入到结束统一计时，供SSE进度和前端时间线展示真实耗时。
+            start_time = time.perf_counter()
+            # ==================== AI修改 结束 ====================
             add_running_task(task_id, self.name)
             put_data(task_id, event="progress", data=get_task_info(task_id))
 
             result = self.process(state)
 
+            # ==================== AI修改 开始 ====================
+            # 先记录耗时再推送完成事件，确保前端收到done_list时同步拿到durations。
+            add_node_duration(task_id, self.name, time.perf_counter() - start_time)
+            # ==================== AI修改 结束 ====================
             add_done_task(task_id, self.name)
             put_data(task_id,event="progress",data = get_task_info(task_id))
 
             logger.info(f"{self.name} 结束执行...")
             return result
         except Exception as e:
+            # ==================== AI修改 开始 ====================
+            # 失败节点也保留耗时，方便用户知道卡在哪一步、耗了多久。
+            if "start_time" in locals():
+                add_node_duration(task_id, self.name, time.perf_counter() - start_time)
+            # ==================== AI修改 结束 ====================
             logger.error(f"{self.name} 执行失败: {e}")
             raise
 

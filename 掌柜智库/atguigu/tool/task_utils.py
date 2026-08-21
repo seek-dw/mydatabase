@@ -24,6 +24,16 @@ _tasks_status: Dict[str, str] = {}
 # 只要访问不存在的 key，自动帮你初始化 {}
 _tasks_result: Dict[str, Dict[str, str]] = defaultdict(dict)
 
+# ==================== AI修改 开始 ====================
+# key: task_id
+# value: 错误信息字符串(导入/查询失败时的异常原因)
+# 原来失败时只设 status=failed, /status 只返回 "failed" 三个字,
+# 前端只能显示"❌ 工作流执行失败中止", 用户看不到真实原因(如段错误前的
+# 具体异常、Milvus 连接失败等), 报告"控制台没有找到报错信息"。
+# 现在把异常摘要存进来, /status 带着一起返回, 前端展示给用户。
+_tasks_error_msg: Dict[str, str] = {}
+# ==================== AI修改 结束 ====================
+
 
 TASK_STATUS_PROCESSING = "processing"
 TASK_STATUS_COMPLETED = "completed"
@@ -51,6 +61,13 @@ _NODE_NAME_TO_CN: Dict[str, str] = {
     "node_search_embedding_hyde": "切片搜索(假设性文档)",
     "node_multi_search": "多路搜索",
     "node_join": "多路搜索合并",
+    # ==================== AI修改 开始 ====================
+    # 教育导入任务的三个阶段，用中文展示给前端进度卡片。
+    "education_upload": "教育资料上传",
+    "education_parse": "教育资料解析",
+    "education_embedding": "教育数据向量化",
+    "education_import": "写入教育知识库",
+    # ==================== AI修改 结束 ====================
 }
 
 
@@ -145,6 +162,18 @@ def update_task_status(task_id: str, status_name: str) -> None:
     _tasks_status[task_id] = status_name
 
 
+# ==================== AI修改 开始 ====================
+def set_task_error(task_id: str, error_msg: str) -> None:
+    """记录任务的错误信息(失败时调用), 供 /status 返回给前端展示。"""
+    _tasks_error_msg[task_id] = error_msg
+
+
+def get_task_error(task_id: str) -> str:
+    """获取任务的错误信息(若无则返回空串)。"""
+    return _tasks_error_msg.get(task_id, "")
+# ==================== AI修改 结束 ====================
+
+
 def add_node_duration(task_id: str, node_name: str, duration: float) -> None:
     """记录节点耗时（秒）"""
     cn_name = _to_cn(node_name)
@@ -164,7 +193,11 @@ def get_task_info(task_id: str) -> Dict[str, any]:
         "status": get_task_status(task_id),
         "running_list": get_running_task_list(task_id),
         "done_list": get_done_task_list(task_id),
-        "durations": get_node_durations(task_id)
+        "durations": get_node_durations(task_id),
+        # ==================== AI修改 开始 ====================
+        # 失败时带上错误原因, 前端展示给用户, 不用翻控制台找
+        "error_msg": get_task_error(task_id),
+        # ==================== AI修改 结束 ====================
     }
 """{
     "status": "completed",
