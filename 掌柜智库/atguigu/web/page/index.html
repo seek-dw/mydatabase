@@ -1,0 +1,3428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<!-- ==================== AI修改 开始 ====================
+     本文件为AI重构: Codex 极简风格的集成前端(对话+导入)
+     1. 全屏布局 + 居中对话列(760px), 去掉原来的"悬浮卡片"包裹
+     2. 明/暗双主题: 左下角按钮切换, 首次进入跟随系统, 选择持久化到 localStorage
+     3. 答案支持 Markdown 渲染(标题/加粗/斜体/列表/行内代码/代码块/链接), 先转义再转换防XSS
+     4. API 统一走合并后的单一后端(8000端口), 页面由后端托管时自动使用同源相对路径
+     5. 交互逻辑(SSE流式/历史记录/导入轮询/图片解析)与旧版完全一致, 只换皮肤
+     ==================== AI修改 结束 ==================== -->
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+    <title>掌柜智库</title>
+    <style>
+        /* ============ 主题变量: 默认亮色, data-theme=dark 为暗色 ============ */
+        :root {
+            --bg: #ffffff;
+            --bg-soft: #f7f7f8;
+            --bg-hover: #f1f1f3;
+            --text: #1a1a1a;
+            --muted: #8e8e96;
+            --faint: #b8b8c0;
+            --border: #e9e9ec;
+            --border-strong: #d9d9de;
+            --accent: #2563eb;
+            --accent-soft: rgba(37, 99, 235, 0.07);
+            --accent-border: rgba(37, 99, 235, 0.22);
+            --user-bubble: #f1f1f4;
+            --send-bg: #1a1a1a;
+            --send-text: #ffffff;
+            --ok: #059669;
+            --err: #dc2626;
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.08);
+            --dot: #9aa0a6;
+            /* 聊天区梦幻氛围光晕(与左侧导航区分) */
+            --chat-glow-a: rgba(99, 102, 241, 0.09);
+            --chat-glow-b: rgba(168, 85, 247, 0.07);
+            --chat-glow-c: rgba(34, 211, 238, 0.06);
+            --glass-surface: rgba(255, 255, 255, 0.48);
+            --glass-surface-strong: rgba(255, 255, 255, 0.66);
+            --glass-border: rgba(255, 255, 255, 0.68);
+            --glass-shadow: 0 22px 55px rgba(72, 76, 104, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+            --grid-line: rgba(84, 96, 138, 0.055);
+        }
+
+        [data-theme="dark"] {
+            --bg: #171717;
+            --bg-soft: #202020;
+            --bg-hover: #262626;
+            --text: #ececf1;
+            --muted: #9b9ba4;
+            --faint: #5f5f68;
+            --border: #2c2c33;
+            --border-strong: #3d3d46;
+            --accent: #7aa2f7;
+            --accent-soft: rgba(122, 162, 247, 0.1);
+            --accent-border: rgba(122, 162, 247, 0.28);
+            --user-bubble: #2b2b33;
+            --send-bg: #ececf1;
+            --send-text: #171717;
+            --ok: #34d399;
+            --err: #f87171;
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.45);
+            --dot: #6b6b74;
+            /* 聊天区梦幻氛围光晕(与左侧导航区分) */
+            --chat-glow-a: rgba(99, 102, 241, 0.16);
+            --chat-glow-b: rgba(168, 85, 247, 0.12);
+            --chat-glow-c: rgba(34, 211, 238, 0.08);
+            --glass-surface: rgba(31, 33, 48, 0.52);
+            --glass-surface-strong: rgba(34, 37, 55, 0.72);
+            --glass-border: rgba(180, 188, 255, 0.18);
+            --glass-shadow: 0 24px 60px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            --grid-line: rgba(164, 174, 255, 0.07);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            transition: background-color .25s ease, color .25s ease;
+            overflow: hidden;
+        }
+
+        /* ============ 整体: 全屏左右布局 ============ */
+        .app {
+            height: 100vh;
+            display: flex;
+        }
+
+        /* ============ 左侧图标导航栏 ============ */
+        .rail {
+            width: 64px;
+            flex: 0 0 64px;
+            border-right: 1px solid var(--border);
+            background: var(--bg-soft);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 16px 0 14px;
+            gap: 8px;
+            transition: background-color .25s ease, border-color .25s ease;
+        }
+
+        .rail .logo {
+            width: 34px;
+            height: 34px;
+            border-radius: 10px;
+            background: var(--send-bg);
+            color: var(--send-text);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            transition: background-color .25s ease;
+        }
+
+        .rail-btn {
+            width: 42px;
+            height: 42px;
+            border-radius: 11px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            transition: all .18s ease;
+        }
+
+        .rail-btn svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .rail-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text);
+        }
+
+        .rail-btn.active {
+            background: var(--bg);
+            border-color: var(--border);
+            color: var(--text);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .rail-btn .tip {
+            position: absolute;
+            left: 52px;
+            top: 50%;
+            transform: translateY(-50%);
+            white-space: nowrap;
+            font-size: 12px;
+            color: var(--text);
+            background: var(--send-bg);
+            padding: 5px 10px;
+            border-radius: 8px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .15s ease;
+            z-index: 20;
+        }
+
+        [data-theme="light"] .rail-btn .tip {
+            color: var(--send-text);
+        }
+
+        .rail-btn:hover .tip {
+            opacity: 1;
+        }
+
+        .rail .spacer {
+            flex: 1;
+        }
+
+        .rail .pill-mini {
+            font-size: 10px;
+            color: var(--muted);
+            border: 1px solid var(--border);
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: var(--bg);
+            margin-top: 4px;
+            white-space: nowrap;
+        }
+
+        .rail .pill-mini.ok {
+            color: var(--ok);
+            border-color: rgba(5, 150, 105, 0.35);
+        }
+
+        /* 主题按钮的太阳/月亮图标按主题显隐 */
+        #themeToggle .icon-sun { display: none; }
+        #themeToggle .icon-moon { display: block; }
+        [data-theme="dark"] #themeToggle .icon-sun { display: block; }
+        [data-theme="dark"] #themeToggle .icon-moon { display: none; }
+
+        /* ============ 主区域 / 视图切换 ============ */
+        .main {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            isolation: isolate;
+            overflow: hidden;
+            /* 聊天区梦幻背景: 靛蓝+紫+青三色柔光, 与左侧导航纯色区分 */
+            background:
+                radial-gradient(1100px 700px at 12% -8%, var(--chat-glow-a), transparent 60%),
+                radial-gradient(900px 620px at 92% 108%, var(--chat-glow-b), transparent 55%),
+                radial-gradient(700px 500px at 75% 12%, var(--chat-glow-c), transparent 50%),
+                var(--bg);
+        }
+
+        .main::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            opacity: .8;
+            background-image: linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+            linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+            background-size: 42px 42px;
+            mask-image: linear-gradient(to bottom, black, transparent 92%);
+        }
+
+        .main::after {
+            content: "";
+            position: absolute;
+            inset: -18%;
+            z-index: 0;
+            pointer-events: none;
+            opacity: .46;
+            background: radial-gradient(circle at 16% 18%, var(--chat-glow-c), transparent 30%),
+            radial-gradient(circle at 82% 72%, var(--chat-glow-a), transparent 32%);
+            filter: blur(32px);
+        }
+
+        .main > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ==================== AI修改 开始 ====================
+           多会话侧栏：会话目录与聊天内容分离，切换时只替换当前 session_id 的历史。
+           ==================== AI修改 结束 ==================== */
+        .session-panel {
+            width: 238px;
+            flex: 0 0 238px;
+            padding: 18px 12px;
+            border-right: 1px solid var(--border);
+            background: color-mix(in srgb, var(--bg-soft) 88%, transparent);
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            transition: width .22s ease, flex-basis .22s ease, padding .22s ease;
+        }
+
+        .session-panel-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 0 5px 12px;
+        }
+
+        .session-panel-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: .08em;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .session-new {
+            width: 30px;
+            height: 30px;
+            border: 1px solid var(--border);
+            border-radius: 9px;
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+            transition: transform .18s ease, border-color .18s ease;
+        }
+
+        .session-new:hover {
+            transform: translateY(-1px);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .session-list {
+            min-height: 0;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .session-empty {
+            padding: 20px 10px;
+            text-align: center;
+            color: var(--faint);
+            font-size: 12px;
+            line-height: 1.6;
+        }
+
+        .session-item {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+            border: 1px solid transparent;
+            border-radius: 11px;
+            padding: 9px 8px;
+            color: var(--muted);
+            cursor: pointer;
+            transition: background .18s ease, color .18s ease, border-color .18s ease;
+        }
+
+        .session-item:hover {
+            background: var(--bg-hover);
+            color: var(--text);
+        }
+
+        .session-item.active {
+            background: var(--bg);
+            border-color: var(--border);
+            color: var(--text);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .session-item-icon {
+            flex: 0 0 auto;
+            color: var(--accent);
+            font-size: 13px;
+        }
+
+        .session-item-title {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            font-size: 12.5px;
+        }
+
+        .session-item-menu {
+            border: 0;
+            background: transparent;
+            color: var(--faint);
+            cursor: pointer;
+            opacity: 0;
+            font-size: 15px;
+        }
+
+        .session-item:hover .session-item-menu,
+        .session-item.active .session-item-menu { opacity: 1; }
+
+        /* ==================== AI修改 开始 ====================
+           教育导入工作台：青绿色作为“已落库/教育数据”专属强调色，
+           与普通文档上传的蓝色进度区分开，用户一眼知道自己导入的是哪类资料。
+           ==================== AI修改 结束 ==================== */
+        .import-hero {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 20px;
+            margin-bottom: 18px;
+        }
+
+        .import-kicker {
+            color: #0f9f87;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .12em;
+            text-transform: uppercase;
+        }
+
+        .import-hero h2 {
+            margin: 6px 0 5px;
+            font-size: clamp(22px, 4vw, 32px);
+            letter-spacing: -.04em;
+        }
+
+        .import-hero p {
+            margin: 0;
+            max-width: 560px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.65;
+        }
+
+        .edu-import-card {
+            border: 1px solid rgba(15, 159, 135, .27);
+            border-radius: 20px;
+            padding: 20px;
+            margin-bottom: 18px;
+            background:
+                radial-gradient(360px 180px at 100% 0%, rgba(15, 159, 135, .13), transparent 72%),
+                var(--glass-surface);
+            box-shadow: 0 16px 40px rgba(15, 159, 135, .08);
+        }
+
+        .edu-card-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 14px;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .edu-card-title {
+            font-size: 15px;
+            font-weight: 750;
+        }
+
+        .edu-card-sub {
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .edu-badge {
+            flex: 0 0 auto;
+            padding: 5px 9px;
+            border-radius: 999px;
+            color: #0f806e;
+            background: rgba(15, 159, 135, .11);
+            border: 1px solid rgba(15, 159, 135, .22);
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .edu-file-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .edu-file-picker {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            min-width: 0;
+            border: 1px solid var(--border);
+            border-radius: 13px;
+            padding: 12px;
+            background: var(--bg);
+            cursor: pointer;
+            transition: border-color .18s ease, transform .18s ease;
+        }
+
+        .edu-file-picker:hover {
+            border-color: #0f9f87;
+            transform: translateY(-1px);
+        }
+
+        .edu-file-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 10px;
+            display: grid;
+            place-items: center;
+            color: #0f9f87;
+            background: rgba(15, 159, 135, .1);
+            font-weight: 800;
+        }
+
+        .edu-file-copy {
+            min-width: 0;
+        }
+
+        .edu-file-label {
+            display: block;
+            font-size: 12.5px;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .edu-file-name {
+            display: block;
+            margin-top: 3px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--faint);
+            font-size: 11px;
+        }
+
+        .edu-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 14px;
+        }
+
+        .edu-submit {
+            border: 0;
+            border-radius: 10px;
+            padding: 9px 16px;
+            color: #fff;
+            background: #0f9f87;
+            cursor: pointer;
+            font-size: 12.5px;
+            font-weight: 750;
+            transition: opacity .18s ease, transform .18s ease;
+        }
+
+        .edu-submit:hover:not(:disabled) { opacity: .88; transform: translateY(-1px); }
+        .edu-submit:disabled { opacity: .45; cursor: not-allowed; }
+
+        .edu-status {
+            flex: 1;
+            min-width: 0;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .edu-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-top: 14px;
+        }
+
+        .edu-stat {
+            padding: 10px 11px;
+            border-radius: 11px;
+            background: rgba(15, 159, 135, .06);
+            border: 1px solid rgba(15, 159, 135, .13);
+        }
+
+        .edu-stat strong {
+            display: block;
+            font-size: 16px;
+            color: #0f806e;
+        }
+
+        .edu-stat span {
+            display: block;
+            margin-top: 3px;
+            color: var(--muted);
+            font-size: 10.5px;
+        }
+
+        .import-section-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 24px 0 10px;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+        }
+
+        .import-section-label::after {
+            content: "";
+            height: 1px;
+            flex: 1;
+            background: var(--border);
+        }
+
+        /* ==================== AI修改 开始 ====================
+           结构化目录卡片：让导入后的课程/题库不是只能靠聊天问，
+           也可以在页面直接确认是否已经入库。
+           ==================== AI修改 结束 ==================== */
+        .catalog-card {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 16px;
+            margin-bottom: 20px;
+            background: var(--glass-surface);
+        }
+
+        .catalog-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .catalog-title {
+            font-size: 14px;
+            font-weight: 750;
+        }
+
+        .catalog-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .catalog-tab {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 6px 9px;
+            background: var(--bg);
+            color: var(--muted);
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        .catalog-tab.active {
+            color: #0f806e;
+            border-color: rgba(15, 159, 135, .3);
+            background: rgba(15, 159, 135, .08);
+        }
+
+        .catalog-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            max-height: 260px;
+            overflow-y: auto;
+        }
+
+        .catalog-item {
+            padding: 11px 12px;
+            border: 1px solid var(--border);
+            border-radius: 11px;
+            background: var(--bg);
+        }
+
+        .catalog-item strong {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 12px;
+        }
+
+        .catalog-item span {
+            display: block;
+            margin-top: 4px;
+            color: var(--muted);
+            font-size: 10.5px;
+            line-height: 1.45;
+        }
+
+        .catalog-empty {
+            grid-column: 1 / -1;
+            padding: 22px;
+            text-align: center;
+            color: var(--faint);
+            font-size: 12px;
+        }
+
+        .view {
+            display: none;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+        }
+
+        .view.active {
+            display: flex;
+        }
+
+        /* ============ 顶栏 ============ */
+        .topbar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--border);
+            background: var(--glass-surface);
+            box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .12);
+            backdrop-filter: blur(18px) saturate(120%);
+            -webkit-backdrop-filter: blur(18px) saturate(120%);
+            transition: border-color .25s ease, background-color .25s ease;
+        }
+
+        .title {
+            display: flex;
+            flex-direction: column;
+            line-height: 1.2;
+        }
+
+        .title strong {
+            font-size: 15px;
+            font-weight: 650;
+            letter-spacing: .2px;
+        }
+
+        .title span {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 3px;
+        }
+
+        .top-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .btn {
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--muted);
+            padding: 7px 14px;
+            border-radius: 10px;
+            font-size: 12.5px;
+            cursor: pointer;
+            transition: all .18s ease;
+        }
+
+        .btn:hover {
+            border-color: var(--border-strong);
+            color: var(--text);
+            background: var(--bg-soft);
+        }
+
+        .btn:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+        }
+
+        /* ============ 对话区: 居中列 ============ */
+        .chat {
+            flex: 1;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+            padding: 10px 0 18px;
+        }
+
+        .thread {
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 26px 24px 8px;
+        }
+
+        #viewChat .thread {
+            width: min(760px, calc(100% - 34px));
+            min-height: calc(100% - 28px);
+            margin: 14px auto 0;
+            padding: 28px 30px 24px;
+            border: 1px solid var(--glass-border);
+            border-radius: 28px;
+            background: var(--glass-surface);
+            box-shadow: var(--glass-shadow);
+            backdrop-filter: blur(20px) saturate(118%);
+            -webkit-backdrop-filter: blur(20px) saturate(118%);
+        }
+
+        .chat::-webkit-scrollbar,
+        .proc-list::-webkit-scrollbar,
+        .log-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat::-webkit-scrollbar-thumb,
+        .proc-list::-webkit-scrollbar-thumb,
+        .log-list::-webkit-scrollbar-thumb {
+            background: var(--border-strong);
+            border-radius: 3px;
+        }
+
+        .dayline {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-align: center;
+            color: var(--faint);
+            font-size: 11px;
+            margin: 4px 0 16px;
+        }
+
+        .dayline::before,
+        .dayline::after {
+            content: "";
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }
+
+        /* ==================== 消息布局(Codex风格) ====================
+           - bot: 头像+名字一行在上,内容区纯文本无边框,随内容自然伸缩
+           - user: 右侧柔和灰底气泡,宽度随内容自适应
+           - 思考中为流光文字"正在思考…",左对齐
+           ==================== AI修改 结束 ==================== */
+        .msg {
+            margin: 14px 0 20px;
+            animation: msgIn .18s ease;
+        }
+
+        @keyframes msgIn {
+            from { opacity: 0; transform: translateY(3px); }
+            to { opacity: 1; transform: none; }
+        }
+
+        .msg.user {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .msg.bot {
+            display: block;
+        }
+
+        .bot-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+            padding-left: 2px;
+        }
+
+        .bot-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .avatar {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+
+        .avatar.bot {
+            background: var(--glass-surface-strong);
+            border: 1px solid var(--glass-border);
+            color: var(--accent);
+            box-shadow: 0 5px 16px rgba(78, 86, 150, .12), inset 0 1px 0 rgba(255, 255, 255, .34);
+        }
+
+        .avatar.bot svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        /* 用户消息: 右侧柔和灰底气泡 */
+        .bubble {
+            max-width: min(560px, 85%);
+            display: inline-block;
+            border-radius: 20px 20px 6px 20px;
+            padding: 10px 16px;
+            background: var(--user-bubble);
+            position: relative;
+            line-height: 1.6;
+            font-size: 15px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            color: var(--text);
+            transition: background-color .25s ease;
+        }
+
+        .meta {
+            font-size: 11px;
+            color: var(--faint);
+            margin-top: 5px;
+        }
+
+        .bot-head .meta {
+            margin-top: 0;
+            display: none;
+        }
+
+        /* bot内容区无边框,左缩进与名字文字对齐(Codex风格) */
+        .content {
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            padding-left: 34px;
+        }
+
+        .answer {
+            margin-top: 0;
+            padding: 14px 18px 15px;
+            border: 1px solid var(--glass-border);
+            border-radius: 18px 18px 18px 8px;
+            background: var(--glass-surface-strong);
+            box-shadow: 0 14px 34px rgba(68, 73, 110, .08), inset 0 1px 0 rgba(255, 255, 255, .28);
+            backdrop-filter: blur(16px) saturate(112%);
+            -webkit-backdrop-filter: blur(16px) saturate(112%);
+        }
+
+        .answer:empty {
+            margin-top: 0;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            box-shadow: none;
+        }
+
+        .answer-text {
+            line-height: 1.62;
+            font-size: 14.5px;
+            overflow-wrap: break-word;
+            color: var(--text);
+        }
+
+        /* ---- Markdown 渲染样式 ---- */
+        .answer-text .md-h {
+            font-weight: 650;
+            font-size: 15.5px;
+            margin: 11px 0 5px;
+        }
+
+        .answer-text .md-h:first-child { margin-top: 0; }
+
+        .answer-text .md-li {
+            display: flex;
+            gap: 9px;
+            margin: 3px 0;
+        }
+
+        .answer-text .md-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: var(--faint);
+            margin-top: 10px;
+            flex: 0 0 auto;
+        }
+
+        .answer-text .md-marker {
+            color: var(--muted);
+            min-width: 20px;
+            font-variant-numeric: tabular-nums;
+            flex: 0 0 auto;
+        }
+
+        .answer-text .md-code {
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            padding: 1px 6px;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: .86em;
+        }
+
+        .answer-text .md-pre {
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 13px;
+            overflow-x: auto;
+            margin: 8px 0;
+            white-space: pre;
+        }
+
+        .answer-text .md-pre code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .answer-text .md-link {
+            color: var(--accent);
+            text-decoration: none;
+            border-bottom: 1px solid var(--accent-border);
+        }
+
+        .answer-text .md-link:hover {
+            border-bottom-color: var(--accent);
+        }
+
+        /* ==================== AI修改: 思考中状态(流光文字) ====================
+           去掉原来的三个跳动圆点,改为流光渐变文字"正在思考"+动态省略号,
+           与检索状态行的流光风格统一 */
+        .typing {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 0 0;
+        }
+
+        .typing .typing-text {
+            background: linear-gradient(90deg, var(--faint) 20%, var(--muted) 50%, var(--faint) 80%);
+            background-size: 200% 100%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: flowShimmer 2s linear infinite;
+            font-size: 12.5px;
+            font-weight: 550;
+            letter-spacing: .5px;
+            user-select: none;
+        }
+
+        /* 省略号逐点浮现: content动画轮流显示 . .. ... */
+        .typing .typing-text::after {
+            content: "";
+            animation: typingDots 1.2s infinite;
+        }
+
+        @keyframes typingDots {
+            0% { content: ""; }
+            25% { content: "."; }
+            50% { content: ".."; }
+            75%, 100% { content: "..."; }
+        }
+
+        /* ---- 欢迎语快捷入口小胶囊 ---- */
+        .chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        .chip {
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 7px 14px;
+            font-size: 13px;
+            color: var(--muted);
+            background: var(--glass-surface);
+            cursor: pointer;
+            transition: all .18s ease;
+            font-family: inherit;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        .chip:hover {
+            border-color: var(--accent-border);
+            color: var(--accent);
+            background: var(--accent-soft);
+        }
+
+        /* ==================== AI修改: 检索过程动态状态行(ChatGPT/Codex风格) ====================
+           - 状态行: 箭头 + 流光渐变文字,实时显示当前正在执行的步骤(如"正在确认问题产品…")
+           - 状态行放在名字行下方(文档流内),与bot-head完全分离,
+             展开时间线不会再把"掌柜智库助手"挤到面板中间
+           - 展开面板为static流式布局,展开时下方内容自然下移,不悬浮
+           ==================== AI修改 结束 ==================== */
+        .proc-wrap {
+            margin: 0;
+        }
+
+        .proc-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: none;
+            width: min(100%, 620px);
+            background: linear-gradient(135deg, rgba(255,255,255,.46), rgba(240,244,255,.28));
+            color: var(--muted);
+            font-size: 11.5px;
+            font-family: inherit;
+            padding: 7px 9px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: background .18s ease, color .18s ease, transform .18s ease, box-shadow .18s ease;
+            max-width: 100%;
+            text-align: left;
+        }
+
+        .proc-toggle:hover {
+            background: var(--glass-surface-strong);
+            color: var(--text);
+            transform: translateY(-1px);
+            box-shadow: 0 5px 18px rgba(28, 48, 80, .08);
+        }
+
+        .proc-toggle .chev {
+            width: 14px;
+            height: 14px;
+            flex: 0 0 auto;
+            transition: transform .22s ease;
+            opacity: .55;
+        }
+
+        .proc-wrap.open .proc-toggle .chev {
+            transform: rotate(90deg);
+        }
+
+        /* 运行中: 流光渐变从左往右扫过文字,表达"正在流动地干活" */
+        .proc-toggle .live {
+            background: linear-gradient(90deg, var(--muted) 25%, var(--accent) 50%, var(--muted) 75%);
+            background-size: 200% 100%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            animation: flowShimmer 1.5s linear infinite;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-weight: 550;
+        }
+
+        /* ==================== AI修改 开始 ====================
+           查询状态升级为轻量控制条：左侧看当前步骤，中间看实时耗时，右侧看步骤进度。
+           ==================== AI修改 结束 ==================== */
+        .proc-live-group {
+            min-width: 0;
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        .proc-subtitle {
+            color: var(--faint);
+            font-size: 10px;
+            line-height: 1.2;
+        }
+
+        .proc-elapsed {
+            flex: 0 0 auto;
+            color: var(--accent);
+            font-size: 11px;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: .02em;
+            padding: 3px 7px;
+            border: 1px solid rgba(37, 99, 235, .16);
+            border-radius: 999px;
+            background: rgba(37, 99, 235, .06);
+        }
+
+        .proc-toggle.done .proc-elapsed {
+            color: var(--ok);
+            border-color: rgba(5, 150, 105, .18);
+            background: rgba(5, 150, 105, .07);
+        }
+
+        .proc-toggle.fail .proc-elapsed {
+            color: var(--err);
+            border-color: rgba(220, 38, 38, .18);
+            background: rgba(220, 38, 38, .06);
+        }
+
+        @media (max-width: 560px) {
+            .proc-toggle { gap: 5px; padding: 7px; }
+            .proc-subtitle { display: none; }
+            .proc-elapsed { font-size: 10px; padding: 3px 5px; }
+        }
+
+        @keyframes flowShimmer {
+            0% { background-position: 150% 0; }
+            100% { background-position: -50% 0; }
+        }
+
+        /* 完成/失败态: 关掉渐变动画,恢复普通文字颜色 */
+        .proc-toggle.done .live {
+            background: none;
+            color: var(--ok);
+            animation: none;
+            font-weight: 500;
+        }
+
+        .proc-toggle.fail .live {
+            background: none;
+            color: var(--err);
+            animation: none;
+        }
+
+        /* 步数小计数: 右侧淡淡的 N/M */
+        .proc-toggle .count {
+            font-size: 10px;
+            color: var(--faint);
+            font-variant-numeric: tabular-nums;
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            padding: 0 6px;
+            border-radius: 999px;
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }
+
+        .proc-toggle.done .count,
+        .proc-toggle.fail .count { display: none; }
+
+        /* ==================== AI修改: 检索时间线面板重设计 ====================
+           - 卡片: 柔和底色+投影+圆角,展开时淡入下滑动画
+           - 竖向时间轴连线串联各步: 完成步绿色对勾圆标,运行步蓝色脉冲光环
+           - 耗时右对齐等宽数字,宽度自适应内容(max-content)
+           - 仍然static文档流: 展开推动下方内容下移,不悬浮 */
+        .proc-list {
+            display: none;
+            position: static;
+            width: max-content;
+            min-width: 240px;
+            max-width: min(560px, 90vw);
+            margin: 8px 0 4px;
+            padding: 10px 18px 10px 12px;
+            list-style: none;
+            max-height: 260px;
+            overflow-y: auto;
+            background: var(--glass-surface-strong);
+            border: 1px solid var(--glass-border);
+            border-radius: 14px;
+            box-shadow: var(--glass-shadow);
+            backdrop-filter: blur(18px) saturate(115%);
+            -webkit-backdrop-filter: blur(18px) saturate(115%);
+        }
+
+        .proc-wrap.open .proc-list {
+            display: block;
+            animation: procIn .22s ease;
+        }
+
+        @keyframes procIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .proc-list li {
+            position: relative;
+            padding: 7px 8px 7px 28px;
+            line-height: 1.5;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text);
+            font-size: 12.5px;
+            border-radius: 8px;
+            transition: background .18s ease;
+        }
+
+        .proc-list li:hover { background: var(--bg-hover); }
+
+        /* 竖向连线: 从本步圆标底部接到下一步圆标顶部(最后一步不画) */
+        .proc-list li:not(:last-child)::after {
+            content: "";
+            position: absolute;
+            left: 8.5px;
+            top: calc(50% + 9px);
+            height: calc(100% - 6px);
+            width: 1.5px;
+            background: var(--border);
+            border-radius: 1px;
+        }
+
+        /* 步骤圆标基座(默认: 空心灰圈) */
+        .proc-list li::before {
+            content: "";
+            position: absolute;
+            left: 2px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--bg);
+            border: 1.5px solid var(--border-strong);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        /* 完成步: 绿色对勾圆标 */
+        .proc-done::before {
+            content: "✓";
+            background: rgba(5, 150, 105, 0.12);
+            border-color: rgba(5, 150, 105, 0.45);
+            color: var(--ok);
+        }
+
+        /* 运行步: 蓝色实心圆标 + 向外扩散的脉冲光环 */
+        .proc-running::before {
+            background: var(--accent);
+            border-color: var(--accent);
+            animation: procHalo 1.6s ease-out infinite;
+        }
+
+        @keyframes procHalo {
+            0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.30); }
+            70% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+            100% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 0); }
+        }
+
+        .proc-running {
+            color: var(--text);
+            font-weight: 550;
+        }
+
+        @keyframes pulseText {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .6; }
+        }
+
+        /* 耗时: 右对齐纯淡色等宽数字,不再用边框胶囊 */
+        .proc-duration {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            padding-left: 16px;
+            flex-shrink: 0;
+        }
+
+        .answer-images {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .answer-images img {
+            display: block;
+            max-width: min(100%, 600px);
+            max-height: 600px;
+            width: auto;
+            height: auto;
+            border-radius: 13px;
+            border: 1px solid var(--glass-border);
+            box-shadow: var(--shadow-md);
+            background: var(--glass-surface);
+        }
+
+        .answer-images a {
+            font-size: 12px;
+            color: var(--muted);
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        /* ============ 输入区: 圆角胶囊输入框 + 圆形发送按钮 ============ */
+        .composer-wrap {
+            padding: 10px 24px 16px;
+            background: linear-gradient(to bottom, transparent, var(--bg) 32%);
+        }
+
+        .composer {
+            max-width: 760px;
+            margin: 0 auto;
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            background: var(--glass-surface-strong);
+            border: 1px solid var(--glass-border);
+            border-radius: 26px;
+            padding: 9px 9px 9px 18px;
+            box-shadow: var(--glass-shadow);
+            backdrop-filter: blur(18px) saturate(118%);
+            -webkit-backdrop-filter: blur(18px) saturate(118%);
+            transition: border-color .2s ease, box-shadow .2s ease, background-color .25s ease;
+        }
+
+        .composer:focus-within {
+            border-color: var(--border-strong);
+            box-shadow: var(--shadow-md);
+            background: var(--glass-surface-strong);
+        }
+
+        textarea {
+            flex: 1;
+            resize: none;
+            min-height: 30px;
+            max-height: 160px;
+            padding: 7px 0;
+            border: none;
+            outline: none;
+            font-size: 15px;
+            line-height: 1.55;
+            background: transparent;
+            color: var(--text);
+            font-family: inherit;
+        }
+
+        textarea::placeholder { color: var(--faint); }
+
+        /* AI修改: 上下文占用进度条(输入框上方) - 与记忆挂钩版 */
+        .ctx-bar {
+            max-width: 760px;
+            margin: 0 auto 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--faint);
+            opacity: 0;
+            transition: opacity .3s ease;
+        }
+        .ctx-bar.show { opacity: 1; }
+        .ctx-track {
+            flex: 1;
+            height: 6px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+            gap: 1px;
+        }
+        /* 分段填充: 记忆(紫) + 检索(蓝) + 问题(灰), 各段宽度按字符占比分配 */
+        .ctx-seg {
+            height: 100%;
+            border-radius: 2px;
+            transition: width .4s ease;
+            min-width: 0;
+        }
+        .ctx-seg-mem { background: #8b5cf6; }   /* 记忆: 紫 */
+        .ctx-seg-ctx { background: var(--accent); } /* 检索: 蓝 */
+        .ctx-seg-q   { background: var(--faint); }   /* 问题: 灰 */
+        .ctx-fill {  /* 兼容: 无分段数据时回退单色条 */
+            height: 100%;
+            width: 0%;
+            border-radius: 4px;
+            background: var(--send-bg);
+            transition: width .4s ease, background-color .3s ease;
+        }
+        .ctx-fill.warn { background: #f59e0b; }
+        .ctx-fill.full { background: #ef4444; }
+        .ctx-text { white-space: nowrap; font-variant-numeric: tabular-nums; }
+        /* "已压缩" 小标签: 长期记忆摘要已激活时显示 */
+        .ctx-tag {
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(139, 92, 246, 0.12);
+            color: #8b5cf6;
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            white-space: nowrap;
+        }
+        [data-theme="dark"] .ctx-tag { color: #a78bfa; }
+
+        .send {
+            width: 38px;
+            height: 38px;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            color: var(--send-text);
+            background: var(--send-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            transition: transform .15s ease, opacity .2s ease, background-color .25s ease;
+        }
+
+        .send svg {
+            width: 17px;
+            height: 17px;
+        }
+
+        .send:hover:not(:disabled) { transform: scale(1.06); }
+        .send:active:not(:disabled) { transform: scale(.96); }
+        .send:disabled { opacity: .35; cursor: not-allowed; }
+
+        .hint {
+            max-width: 760px;
+            margin: 8px auto 0;
+            color: var(--faint);
+            font-size: 11.5px;
+            text-align: center;
+        }
+
+        .kbd {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            border: 1px solid var(--border);
+            padding: 1px 6px;
+            border-radius: 6px;
+            background: var(--bg-soft);
+            color: var(--muted);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                scroll-behavior: auto !important;
+                animation-duration: .01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: .01ms !important;
+            }
+        }
+
+        /* ============ 导入视图 ============ */
+        .import-body {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+        }
+
+        .import-body .thread {
+            padding: 28px 24px;
+        }
+
+        .upload-area {
+            border: 1.5px dashed var(--border-strong);
+            background: var(--bg-soft);
+            border-radius: 16px;
+            padding: 40px 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all .25s ease;
+            margin-bottom: 20px;
+        }
+
+        .upload-area:hover {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+
+        .upload-icon {
+            color: var(--muted);
+            margin-bottom: 14px;
+        }
+
+        .upload-icon svg {
+            width: 34px;
+            height: 34px;
+        }
+
+        .upload-text {
+            color: var(--muted);
+            font-size: 14.5px;
+        }
+
+        .upload-sub {
+            color: var(--faint);
+            font-size: 12px;
+            margin-top: 6px;
+        }
+
+        .file-input { display: none; }
+
+        /* ==================== AI修改 开始 ====================
+           本地文件夹导入行: 路径输入框 + 扫描按钮, 视觉与上传区同语言
+           ==================== AI修改 结束 ==================== */
+        .local-import-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .local-dir-input {
+            flex: 1;
+            padding: 9px 14px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 13px;
+            outline: none;
+            transition: border-color .18s ease, box-shadow .18s ease;
+            font-family: inherit;
+        }
+
+        .local-dir-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-soft);
+        }
+
+        .local-dir-input::placeholder { color: var(--faint); }
+
+        .local-import-btn {
+            flex-shrink: 0;
+            padding: 9px 18px;
+            border: none;
+            border-radius: 10px;
+            background: var(--accent);
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity .18s ease, transform .18s ease;
+            white-space: nowrap;
+        }
+
+        .local-import-btn:hover { opacity: .88; transform: translateY(-1px); }
+        .local-import-btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+        .file-list {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .file-item {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            transition: border-color .2s ease, box-shadow .2s ease;
+        }
+
+        .file-item:hover {
+            border-color: var(--border-strong);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .file-info {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            margin-right: 20px;
+            min-width: 0;
+        }
+
+        .file-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 10px;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: var(--text);
+            font-size: 14.5px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-size {
+            font-size: 12.5px;
+            color: var(--faint);
+            flex-shrink: 0;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* 状态徽章: 柔和底色+文字色, 告别重渐变 */
+        .status-badge {
+            padding: 5px 14px;
+            border-radius: 999px;
+            font-size: 12.5px;
+            font-weight: 600;
+            min-width: 78px;
+            text-align: center;
+            letter-spacing: .3px;
+            flex-shrink: 0;
+            border: 1px solid transparent;
+        }
+
+        .status-uploading {
+            background: rgba(217, 119, 6, 0.09);
+            color: #d97706;
+            border-color: rgba(217, 119, 6, 0.28);
+        }
+
+        .status-processing {
+            background: var(--accent-soft);
+            color: var(--accent);
+            border-color: var(--accent-border);
+        }
+
+        .status-completed {
+            background: rgba(5, 150, 105, 0.09);
+            color: var(--ok);
+            border-color: rgba(5, 150, 105, 0.28);
+        }
+
+        .status-error {
+            background: rgba(220, 38, 38, 0.08);
+            color: var(--err);
+            border-color: rgba(220, 38, 38, 0.28);
+        }
+
+        .progress-wrapper { margin-top: 8px; display: none; }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 5px;
+            background: var(--bg-soft);
+            border-radius: 999px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            border-radius: 999px;
+            transition: width .4s cubic-bezier(.4, 0, .2, 1), background-color .4s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, .3) 50%, rgba(255, 255, 255, 0) 100%);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-text {
+            font-size: 11.5px;
+            color: var(--faint);
+            margin-top: 6px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .log-details {
+            margin-top: 14px;
+            font-size: 12.5px;
+            color: var(--text);
+            background: var(--bg-soft);
+            border-radius: 12px;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+        }
+
+        .log-details summary {
+            cursor: pointer;
+            user-select: none;
+            color: var(--muted);
+            outline: none;
+            display: flex;
+            align-items: center;
+            font-weight: 600;
+            font-size: 12.5px;
+            letter-spacing: .3px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+            list-style: none;
+        }
+
+        .log-details summary::-webkit-details-marker { display: none; }
+
+        .log-details summary::before {
+            content: "▸";
+            color: var(--faint);
+            margin-right: 8px;
+            transition: transform .2s ease;
+        }
+
+        .log-details[open] summary::before { transform: rotate(90deg); }
+
+        .log-details summary:hover { color: var(--accent); }
+
+        .log-list {
+            margin: 8px 0 0;
+            padding: 0 0 0 20px;
+            list-style: none;
+            max-height: 200px;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .log-list::before {
+            content: "";
+            position: absolute;
+            left: 7px;
+            top: 10px;
+            bottom: 10px;
+            width: 1.5px;
+            background: var(--border);
+            border-radius: 1px;
+        }
+
+        .log-list li {
+            margin: 0;
+            padding: 9px 10px;
+            line-height: 1.5;
+            display: flex;
+            align-items: center;
+            position: relative;
+            border-radius: 8px;
+            transition: background .18s ease;
+            color: var(--text);
+            font-size: 12.5px;
+        }
+
+        .log-list li:hover { background: var(--bg-hover); }
+
+        .log-list li::before {
+            content: "";
+            position: absolute;
+            left: -17px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            border: 2px solid var(--border-strong);
+            background: var(--bg-soft);
+            z-index: 1;
+        }
+
+        .log-done { color: var(--text); }
+
+        .log-done::before {
+            background: var(--ok) !important;
+            border-color: var(--ok) !important;
+        }
+
+        .log-duration {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--muted);
+            background: var(--bg);
+            border: 1px solid var(--border);
+            padding: 2px 10px;
+            border-radius: 999px;
+            white-space: nowrap;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            flex-shrink: 0;
+        }
+
+        .log-running { animation: pulseText 2s infinite; }
+
+        .log-running::before {
+            background: var(--accent) !important;
+            border-color: var(--accent) !important;
+        }
+
+        @media (max-width: 640px) {
+            .session-panel { display: none; }
+            .edu-file-grid, .edu-stats { grid-template-columns: 1fr; }
+            .import-hero { display: block; }
+            .edu-actions { align-items: flex-start; flex-direction: column; }
+            .thread, .import-body .thread { padding: 18px 14px; }
+            .composer-wrap { padding: 8px 12px 12px; }
+            .topbar { padding: 12px 14px; }
+            #viewChat .thread {
+                width: calc(100% - 18px);
+                margin-top: 8px;
+                padding: 22px 16px 18px;
+                border-radius: 22px;
+            }
+            #viewChat .content { padding-left: 0; }
+            #viewChat .answer { padding: 12px 14px 13px; }
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <!-- 左侧导航 -->
+    <div class="rail">
+        <div class="logo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="7" width="18" height="13" rx="4" stroke="currentColor" stroke-width="1.8"/>
+                <circle cx="9" cy="13" r="1.3" fill="currentColor"/>
+                <circle cx="15" cy="13" r="1.3" fill="currentColor"/>
+                <path d="M9 17h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                <path d="M12 7V4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                <circle cx="12" cy="3.2" r="1.2" fill="currentColor"/>
+            </svg>
+        </div>
+        <button class="rail-btn active" id="tabChat" title="智能对话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5c-1.4 0-2.8-.35-4-1L3 20l1-5.5a8.5 8.5 0 1 1 17-3z"/>
+            </svg>
+            <span class="tip">智能对话</span>
+        </button>
+        <button class="rail-btn" id="tabImport" title="知识库导入">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 16V4m0 0L7 9m5-5l5 5"/>
+                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+            </svg>
+            <span class="tip">知识库导入</span>
+        </button>
+        <div class="spacer"></div>
+        <!-- AI修改: 明暗主题切换按钮,首次跟随系统,选择记忆在localStorage -->
+        <button class="rail-btn" id="themeToggle" title="切换主题">
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+            </svg>
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="4.2"/>
+                <path d="M12 2.5v2.4m0 14.2v2.4M4.9 4.9l1.7 1.7m10.8 10.8l1.7 1.7M2.5 12h2.4m14.2 0h2.4M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"/>
+            </svg>
+            <span class="tip">切换明暗主题</span>
+        </button>
+        <span class="pill-mini" id="apiPill">未连接</span>
+    </div>
+
+    <!-- ==================== AI修改 开始 ====================
+         左侧会话目录：新建/切换/重命名/删除都只操作 session_id，
+         当前聊天内容仍由原历史接口加载，兼容已有会话。
+         ==================== AI修改 结束 ==================== -->
+    <aside class="session-panel" id="sessionPanel">
+        <div class="session-panel-head">
+            <span class="session-panel-title">会话</span>
+            <button class="session-new" id="newSessionBtn" title="新建会话">+</button>
+        </div>
+        <div class="session-list" id="sessionList">
+            <div class="session-empty">正在加载会话…</div>
+        </div>
+    </aside>
+
+    <!-- 主区域 -->
+    <div class="main">
+        <!-- 视图一: 对话 -->
+        <div class="view active" id="viewChat">
+            <div class="topbar">
+                <div class="title">
+                    <strong>掌柜智库</strong>
+                    <span>闲聊直答 · 知识库问题展示检索过程</span>
+                </div>
+                <div class="top-actions">
+                    <button class="btn" id="btnClear">清空对话</button>
+                </div>
+            </div>
+
+            <div class="chat" id="chat">
+                <div class="thread">
+                    <div class="dayline">今天</div>
+                    <!-- 欢迎消息 -->
+                    <div class="msg bot">
+                        <div class="bot-head">
+                            <div class="avatar bot">
+                                <svg viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 3l1.9 5.4L19.5 10l-5.6 1.6L12 17l-1.9-5.4L4.5 10l5.6-1.6L12 3z"/>
+                                </svg>
+                            </div>
+                            <span class="bot-name">掌柜智库助手</span>
+                        </div>
+                        <div class="content">
+                            <div class="answer">
+                                <div class="answer-text">您好呀 ✨ 我是掌柜智库，您的知识库小帮手。随便聊聊天，或者问我知识库里的问题（课程 / 题库 / 文档都可以哦）😊</div>
+                            </div>
+                            <!-- AI修改: 快捷提问小胶囊,点击填入输入框 -->
+                            <div class="chips">
+                                <button class="chip" data-q="有哪些Python课程？">有哪些Python课程？</button>
+                                <button class="chip" data-q="HAK180 怎么接地？">HAK180 怎么接地？</button>
+                                <button class="chip" data-q="简单介绍一下你自己">介绍一下你自己</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="composer-wrap">
+                <!-- AI修改: 上下文占用进度条 - 与记忆挂钩版: 分段显示记忆/检索/问题,
+                     长期记忆摘要激活时显示"已压缩"标签 -->
+                <div class="ctx-bar" id="ctxBar">
+                    <span class="ctx-text">上下文</span>
+                    <div class="ctx-track" id="ctxTrack">
+                        <div class="ctx-seg ctx-seg-mem" id="ctxSegMem" style="width:0%"></div>
+                        <div class="ctx-seg ctx-seg-ctx" id="ctxSegCtx" style="width:0%"></div>
+                        <div class="ctx-seg ctx-seg-q" id="ctxSegQ" style="width:0%"></div>
+                    </div>
+                    <span class="ctx-text" id="ctxText">0 字</span>
+                </div>
+                <div class="composer">
+                    <textarea id="input" rows="1" placeholder="请输入问题…"></textarea>
+                    <!-- AI修改: 圆形发送按钮(上箭头),与Codex一致 -->
+                    <button class="send" id="send" title="发送 (Enter)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 19V5m0 0l-6 6m6-6l6 6"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="hint"><span class="kbd">Enter</span> 发送 · <span class="kbd">Shift</span>+<span class="kbd">Enter</span> 换行</div>
+            </div>
+        </div>
+
+        <!-- 视图二: 导入 -->
+        <div class="view" id="viewImport">
+            <div class="topbar">
+                <div class="title">
+                    <strong>知识库导入</strong>
+                    <span>普通文档与教育资料分开管理，导入状态实时可见</span>
+                </div>
+            </div>
+            <div class="import-body">
+                <div class="thread">
+                    <div class="import-hero">
+                        <div>
+                            <div class="import-kicker">Knowledge workspace</div>
+                            <h2>把资料变成可回答的知识</h2>
+                            <p>课程介绍和题目资料会被保留为结构化字段，后续可以按课程、题库、题型和来源精确检索。</p>
+                        </div>
+                    </div>
+                    <section class="edu-import-card">
+                        <div class="edu-card-head">
+                            <div>
+                                <div class="edu-card-title">教育数据导入</div>
+                                <div class="edu-card-sub">课程介绍 / 题目资料可单独导入 · 自动解析 · 向量化 · 写入教育知识库</div>
+                            </div>
+                            <span class="edu-badge">EDU / STRUCTURED</span>
+                        </div>
+                        <div class="edu-file-grid">
+                            <label class="edu-file-picker" for="eduCourseInput">
+                                <span class="edu-file-icon">课</span>
+                                <span class="edu-file-copy">
+                                    <span class="edu-file-label">课程介绍.md</span>
+                                    <span class="edu-file-name" id="eduCourseName">点击选择课程资料</span>
+                                </span>
+                            </label>
+                            <label class="edu-file-picker" for="eduQuestionInput">
+                                <span class="edu-file-icon">题</span>
+                                <span class="edu-file-copy">
+                                    <span class="edu-file-label">题目资料.md</span>
+                                    <span class="edu-file-name" id="eduQuestionName">点击选择题目资料</span>
+                                </span>
+                            </label>
+                        </div>
+                        <input type="file" id="eduCourseInput" class="file-input" accept=".md">
+                        <input type="file" id="eduQuestionInput" class="file-input" accept=".md">
+                        <div class="edu-actions">
+                            <button class="edu-submit" id="eduImportBtn" type="button" disabled>开始导入教育数据</button>
+                            <span class="edu-status" id="eduImportStatus">可选择课程资料、题目资料，或两份一起导入</span>
+                        </div>
+                        <div class="edu-stats">
+                            <div class="edu-stat"><strong id="eduCourseCount">—</strong><span>课程系列</span></div>
+                            <div class="edu-stat"><strong id="eduQuestionCount">—</strong><span>题目数量</span></div>
+                            <!-- ==================== AI修改 开始 ====================
+                                 用用户语言解释这个统计值，避免把“主体”误解成多余的业务数据。
+                                 ==================== AI修改 结束 ==================== -->
+                            <div class="edu-stat"><strong id="eduItemCount">—</strong><span>课程/题库主体</span></div>
+                        </div>
+                    </section>
+                    <section class="catalog-card">
+                        <div class="catalog-head">
+                            <!-- ==================== AI修改 开始 ====================
+                                 标明目录是导入后的预览，不是额外的新知识库页面。
+                                 ==================== AI修改 结束 ==================== -->
+                            <div class="catalog-title">教育知识目录（导入结果预览）</div>
+                            <div class="catalog-actions">
+                                <button class="catalog-tab active" id="catalogCourseTab" type="button">课程</button>
+                                <button class="catalog-tab" id="catalogQuestionTab" type="button">题目</button>
+                            </div>
+                        </div>
+                        <div class="catalog-grid" id="educationCatalog">
+                            <div class="catalog-empty">导入教育资料后，这里会显示课程和题目目录</div>
+                        </div>
+                    </section>
+                    <div class="import-section-label">普通文档导入</div>
+                    <div class="upload-area" id="dropZone">
+                        <div class="upload-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M12 16V4m0 0L7 9m5-5l5 5"/>
+                                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+                            </svg>
+                        </div>
+                        <div class="upload-text">点击或拖拽文件到此处</div>
+                        <div class="upload-sub">PDF / MD / DOCX · 支持多选 · 选文件夹可自动配对 images 里的图片</div>
+                        <input type="file" id="fileInput" class="file-input" accept=".pdf,.md,.docx,.png,.jpg,.jpeg,.gif,.bmp,.webp" multiple>
+                        <!-- ==================== AI修改 开始 ====================
+                             文件夹选择入口: 用 webkitdirectory 让浏览器递归读取整个文件夹,
+                             自动拿到 md + images/ 里的图片, 前端按文件名配对后一起传。
+                             用户只需选文件夹, 不用手动挑图片。
+                             ==================== AI修改 结束 ==================== -->
+                        <input type="file" id="folderInput" class="file-input" webkitdirectory directory multiple style="display:none">
+                        <button id="folderBtn" class="folder-pick-btn" type="button" style="margin-top:8px;padding:6px 16px;font-size:13px;border:1px solid var(--border);border-radius:8px;background:var(--surface);cursor:pointer;color:var(--text);">选择文件夹（自动配对图片）</button>
+                    </div>
+                    <!-- ==================== AI修改 开始 ====================
+                         本地文件夹导入入口: 输入服务器本机的文件夹路径一键导入。
+                         md 引用的图片由后端直接扫磁盘自动配对上传, 用户无需手动选图片
+                         (浏览器沙箱不允许网页读磁盘, 但后端跑在本机可以直接读)
+                         ==================== AI修改 结束 ==================== -->
+                    <div class="local-import-row">
+                        <input type="text" id="localDirInput" class="local-dir-input"
+                               placeholder="本地文件夹一键导入：粘贴路径（md 的图片自动配对，无需手动选）">
+                        <button id="localImportBtn" class="local-import-btn">扫描导入</button>
+                    </div>
+                    <div id="fileList" class="file-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    /* ================= 通用 ================= */
+    /* AI修改: 前后端已合并为单一服务(8000端口)。页面若由后端托管则用同源相对路径,
+       直接双击打开html文件时回退到127.0.0.1:8000 */
+    const API_BASE = (location.protocol.startsWith('http') && location.port === '8000')
+        ? '' : 'http://127.0.0.1:8000';
+
+    function escapeHtml(str) {
+        return String(str)
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", "&#039;");
+    }
+
+    /* ================= AI修改: 明暗主题切换 ================= */
+    (function () {
+        const saved = localStorage.getItem('kb_theme');
+        const initial = saved || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.dataset.theme = initial;
+
+        document.getElementById('themeToggle').addEventListener('click', () => {
+            const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+            document.documentElement.dataset.theme = next;
+            localStorage.setItem('kb_theme', next);
+        });
+    })();
+
+    /* ================= AI修改: 轻量Markdown渲染 =================
+       先整体HTML转义(防XSS),再按常见语法转换:
+       ```代码块``` → <pre>, `行内代码`, **加粗**, *斜体*, # 标题,
+       -/* 无序列表, 1. 有序列表, [文字](链接) → <a>
+       代码块用占位符保护,避免内部内容被其他规则二次处理 */
+    function renderMarkdown(src) {
+        let s = escapeHtml(String(src || ''));
+        const preBlocks = [];
+        // 代码块: 流式输出中可能出现未闭合的```,用 (```|$) 兜底,保证半截代码块也能实时渲染
+        s = s.replace(/```[^\n]*\n?([\s\S]*?)(?:```|$)/g, (m, code) => {
+            preBlocks.push(code);
+            return "\x00PRE" + (preBlocks.length - 1) + "\x00";
+        });
+        // 答案正文只保留一个段落间距,避免模型连续输出大量空行把聊天区拉得过长。
+        // 代码块已被占位符保护,因此这里不会改变代码内部的换行。
+        s = s.replace(/[ \t]+\n/g, '\n');
+        s = s.replace(/\n{3,}/g, '\n\n');
+        s = s.replace(/`([^`\n]+)`/g, '<code class="md-code">$1</code>');
+        s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
+        s = s.replace(/^#{1,6}\s+(.+)$/gm, '<div class="md-h">$1</div>');
+        s = s.replace(/^[-•]\s+(.+)$/gm, '<div class="md-li"><span class="md-dot"></span><span>$1</span></div>');
+        s = s.replace(/^(\d+)[.、]\s+(.+)$/gm, '<div class="md-li"><span class="md-marker">$1.</span><span>$2</span></div>');
+        // 链接: 只允许 http/https 协议,防止 javascript: 注入
+        s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        s = s.replace(/\x00PRE(\d+)\x00/g, (m, i) => '<pre class="md-pre"><code>' + preBlocks[Number(i)] + '</code></pre>');
+        // 两个换行只生成一个视觉断行,让段落之间保留呼吸感但不再松散。
+        s = s.replace(/\n\n/g, '<br>');
+        s = s.replace(/\n/g, '<br>');
+        return s;
+    }
+
+    /* ================= 视图切换 ================= */
+    const tabChat = document.getElementById('tabChat');
+    const tabImport = document.getElementById('tabImport');
+    const viewChat = document.getElementById('viewChat');
+    const viewImport = document.getElementById('viewImport');
+
+    function switchView(name) {
+        const isChat = name === 'chat';
+        tabChat.classList.toggle('active', isChat);
+        tabImport.classList.toggle('active', !isChat);
+        viewChat.classList.toggle('active', isChat);
+        viewImport.classList.toggle('active', !isChat);
+        if (isChat) setTimeout(() => inputEl.focus(), 50);
+    }
+
+    tabChat.addEventListener('click', () => switchView('chat'));
+    tabImport.addEventListener('click', () => switchView('import'));
+
+    /* ================= API 健康检测 ================= */
+    const apiPill = document.getElementById('apiPill');
+
+    async function apiHealth() {
+        try {
+            const res = await fetch(`${API_BASE}/health`);
+            if (!res.ok) throw new Error();
+            apiPill.textContent = '已连接';
+            apiPill.classList.add('ok');
+        } catch (e) {
+            apiPill.textContent = '未连接';
+            apiPill.classList.remove('ok');
+        }
+    }
+
+    /* ================= 对话逻辑 ================= */
+    const chatEl = document.getElementById('chat');
+    const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+    const btnClear = document.getElementById('btnClear');
+
+    // AI修改: bot头像的SVG(星形),复用在骨架和历史消息里
+    const BOT_AVATAR_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3l1.9 5.4L19.5 10l-5.6 1.6L12 17l-1.9-5.4L4.5 10l5.6-1.6L12 3z"/></svg>';
+
+    let sessionId = localStorage.getItem('kb_session_id');
+    if (!sessionId) {
+        sessionId = 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem('kb_session_id', sessionId);
+    }
+
+    // ==================== AI修改 开始 ====================
+    // 多会话前端状态：服务端保存目录，localStorage 只记住上次打开的是哪个会话。
+    const sessionListEl = document.getElementById('sessionList');
+    const newSessionBtn = document.getElementById('newSessionBtn');
+    let sessionItems = [];
+
+    function renderSessionList(items) {
+        sessionItems = Array.isArray(items) ? items : [];
+        if (!sessionItems.some(item => item.session_id === sessionId)) {
+            sessionItems.unshift({session_id: sessionId, title: '当前会话', updated_ts: 0});
+        }
+        sessionListEl.innerHTML = '';
+        for (const item of sessionItems) {
+            const row = document.createElement('div');
+            row.className = 'session-item' + (item.session_id === sessionId ? ' active' : '');
+            row.dataset.sessionId = item.session_id;
+            row.innerHTML = '<span class="session-item-icon">✦</span>' +
+                '<span class="session-item-title" title="' + escapeHtml(item.title || '新会话') + '">' +
+                escapeHtml(item.title || '新会话') + '</span>' +
+                '<button class="session-item-menu" type="button" title="重命名">···</button>';
+            sessionListEl.appendChild(row);
+        }
+    }
+
+    async function loadSessions() {
+        try {
+            const res = await fetch(API_BASE + '/sessions');
+            const data = res.ok ? await res.json() : {};
+            renderSessionList(data.items || []);
+        } catch (_) {
+            renderSessionList([]);
+        }
+    }
+
+    function resetVisibleChat() {
+        const nodes = Array.from(chatEl.querySelectorAll('.msg'));
+        for (let i = 1; i < nodes.length; i++) nodes[i].remove();
+        scrollToBottom();
+    }
+
+    async function switchSession(nextSessionId) {
+        if (!nextSessionId || nextSessionId === sessionId) return;
+        sessionId = nextSessionId;
+        localStorage.setItem('kb_session_id', sessionId);
+        resetVisibleChat();
+        renderSessionList(sessionItems);
+        await loadHistory();
+    }
+
+    async function createNewSession() {
+        try {
+            const res = await fetch(API_BASE + '/sessions', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: '新会话'})
+            });
+            const data = await res.json();
+            sessionId = data.session_id;
+        } catch (_) {
+            sessionId = 'sess-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        }
+        localStorage.setItem('kb_session_id', sessionId);
+        resetVisibleChat();
+        await loadSessions();
+        inputEl.focus();
+    }
+
+    // ==================== AI修改 开始 ====================
+    // 首条问题自动命名：新会话创建时先用“新会话”占位，用户第一次提问后
+    // 再把问题同步到后端目录；已有真实标题的会话不会被后续问题覆盖。
+    async function ensureFirstSessionTitle(text) {
+        const current = sessionItems.find(item => item.session_id === sessionId);
+        const currentTitle = (current?.title || '').trim();
+        if (currentTitle && currentTitle !== '新会话' && currentTitle !== '当前会话') {
+            return;
+        }
+        try {
+            const res = await fetch(API_BASE + '/sessions/' + encodeURIComponent(sessionId), {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: text})
+            });
+            if (res.ok) await loadSessions();
+        } catch (_) {
+            // 标题同步失败不影响本轮问题提交，下一次刷新仍可重试。
+        }
+    }
+    // ==================== AI修改 结束 ====================
+
+    sessionListEl.addEventListener('click', async (event) => {
+        const row = event.target.closest('.session-item');
+        if (!row) return;
+        const id = row.dataset.sessionId;
+        if (event.target.closest('.session-item-menu')) {
+            const current = sessionItems.find(item => item.session_id === id);
+            const title = prompt('输入新名称；如需删除请输入“删除”', current?.title || '新会话');
+            if (!title || !title.trim()) return;
+            if (title.trim() === '删除') {
+                if (!confirm('确定删除这个会话及其历史记录吗？')) return;
+                await fetch(API_BASE + '/sessions/' + encodeURIComponent(id), {method: 'DELETE'});
+                if (id === sessionId) {
+                    await createNewSession();
+                } else {
+                    await loadSessions();
+                }
+                return;
+            }
+            await fetch(API_BASE + '/sessions/' + encodeURIComponent(id), {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: title.trim()})
+            });
+            await loadSessions();
+            return;
+        }
+        await switchSession(id);
+    });
+
+    newSessionBtn.addEventListener('click', createNewSession);
+    // ==================== AI修改 结束 ====================
+
+    function scrollToBottom() {
+        chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    function nowTime() {
+        const d = new Date();
+        return d.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+    }
+
+    function formatTime(ts) {
+        if (!ts) return nowTime();
+        const d = new Date(Number(ts) * 1000);
+        if (Number.isNaN(d.getTime())) return nowTime();
+        return d.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'});
+    }
+
+    function formatDuration(seconds) {
+        if (seconds < 60) return Number(seconds).toFixed(1) + 's';
+        const mins = Math.floor(seconds / 60);
+        return `${mins}m${(seconds % 60).toFixed(0)}s`;
+    }
+
+    // ==================== AI修改 开始 ====================
+    // 前端用单调时钟补充“从本轮查询开始到现在”的墙钟耗时，
+    // 后端单步耗时仍由durations提供，两者分别反映整体等待和节点执行。
+    function startProcElapsedTimer(wrap, startedAt) {
+        if (wrap._elapsedTimer) return;
+        wrap.dataset.procStartedAt = String(startedAt || performance.now());
+        const elapsedEl = wrap.querySelector('.proc-elapsed');
+        const update = () => {
+            const elapsed = Math.max(0, (performance.now() - Number(wrap.dataset.procStartedAt)) / 1000);
+            wrap.dataset.procElapsed = String(elapsed);
+            if (elapsedEl) elapsedEl.textContent = formatDuration(elapsed);
+        };
+        update();
+        wrap._elapsedTimer = window.setInterval(update, 100);
+    }
+
+    function stopProcElapsedTimer(wrap) {
+        if (wrap && wrap._elapsedTimer) {
+            window.clearInterval(wrap._elapsedTimer);
+            wrap._elapsedTimer = null;
+        }
+        return Number(wrap?.dataset.procElapsed || 0);
+    }
+    // ==================== AI修改 结束 ====================
+
+    function isImageUrl(url) {
+        try {
+            const u = new URL(url);
+            return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(u.pathname);
+        } catch (e) {
+            return /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(url || '');
+        }
+    }
+
+    function normalizeUrl(rawUrl) {
+        const s = String(rawUrl || '').trim();
+        if (!s) return '';
+        return s.replace(/\s/g, '%20');
+    }
+
+    function dedupeKeepOrder(arr) {
+        const seen = new Set();
+        const out = [];
+        for (const x of (Array.isArray(arr) ? arr : [])) {
+            const v = String(x || '');
+            if (!v || seen.has(v)) continue;
+            seen.add(v);
+            out.push(v);
+        }
+        return out;
+    }
+
+    function extractUrlsLoose(text) {
+        const s = String(text || '');
+        const regex = /(https?:\/\/[^\s]+)/g;
+        const matches = s.match(regex) || [];
+        const urls = [];
+        const trimTailPunct = (u) => String(u || '').replace(/[)\]}'">，。,;；\]】）＞]+$/g, '');
+        const trimHeadPunct = (u) => String(u || '').replace(/^[<([{'"]+|^[＜（【\[]+/g, '');
+        for (const m of matches) {
+            const u = trimHeadPunct(trimTailPunct(m));
+            if (u) urls.push(u);
+        }
+        return dedupeKeepOrder(urls);
+    }
+
+    function findLastImageMarkerIndex(raw) {
+        const s = String(raw || '');
+        const re = /【\s*图片\s*】|\[\s*图片\s*\]/g;
+        let m, lastIdx = -1, lastLen = 0;
+        while ((m = re.exec(s)) !== null) {
+            lastIdx = m.index;
+            lastLen = m[0].length;
+        }
+        return {idx: lastIdx, len: lastLen};
+    }
+
+    function parseAnswerAndImages(text) {
+        const raw = String(text || '');
+        const {idx, len} = findLastImageMarkerIndex(raw);
+        if (idx === -1) return {text: raw, images: []};
+        const before = raw.slice(0, idx).trimEnd();
+        const after = raw.slice(idx + len).trim();
+        const urls = [];
+        const lines = after.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        for (const line of lines) {
+            if (line.startsWith('http://') || line.startsWith('https://')) {
+                urls.push(line);
+            } else {
+                for (const u of extractUrlsLoose(line)) urls.push(u);
+            }
+        }
+        const seen = new Set();
+        const images = [];
+        for (const u of urls) {
+            const normalized = normalizeUrl(u);
+            if (!isImageUrl(normalized) || seen.has(normalized)) continue;
+            seen.add(normalized);
+            images.push(normalized);
+        }
+        return {text: before, images};
+    }
+
+    function renderAnswerWithImages(containerEl, answerText, candidateImageUrls) {
+        const {text, images: imagesFromBlock} = parseAnswerAndImages(answerText);
+        const candidates = Array.isArray(candidateImageUrls)
+            ? candidateImageUrls.map(normalizeUrl).filter(isImageUrl)
+            : [];
+        const hasBlockImages = imagesFromBlock && imagesFromBlock.length > 0;
+        const looseImages = extractUrlsLoose(answerText).map(normalizeUrl).filter(isImageUrl);
+        const allImages = Array.from(new Set([
+            ...(hasBlockImages ? imagesFromBlock : []),
+            ...candidates,
+            ...looseImages
+        ]));
+
+        containerEl.textContent = '';
+
+        const textEl = document.createElement('div');
+        textEl.className = 'answer-text';
+        // AI修改: 正文走Markdown渲染(内部已做HTML转义,安全)
+        if ((text || '').trim().length > 0) {
+            textEl.innerHTML = renderMarkdown(text);
+        } else {
+            textEl.textContent = '（已完成，但未返回答案）';
+        }
+        containerEl.appendChild(textEl);
+
+        if (allImages.length > 0) {
+            const imgWrap = document.createElement('div');
+            imgWrap.className = 'answer-images';
+            for (const url of allImages) {
+                const safeUrl = normalizeUrl(url);
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.src = safeUrl;
+                img.alt = '参考图片';
+                img.referrerPolicy = 'no-referrer';
+                // ==================== AI修改 开始 ====================
+                // 图片加载失败时不影响答案文字显示；记录 URL 方便判断是
+                // MinIO 地址、跨域配置还是对象不存在，避免“页面没图”只能盲猜。
+                // ==================== AI修改 结束 ====================
+                img.addEventListener('error', () => {
+                    console.warn('[图片加载失败]', safeUrl);
+                    img.style.display = 'none';
+                });
+                imgWrap.appendChild(img);
+
+                const link = document.createElement('a');
+                link.href = safeUrl;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = url;
+                imgWrap.appendChild(link);
+            }
+            containerEl.appendChild(imgWrap);
+        }
+    }
+
+    function addUserMsg(text) {
+        const html = `
+        <div class="msg user">
+          <div class="bubble">${escapeHtml(text)}</div>
+          <div class="meta">${nowTime()}</div>
+        </div>`;
+        chatEl.querySelector('.thread').insertAdjacentHTML('beforeend', html);
+        scrollToBottom();
+    }
+
+    function addBotMsgWithTime(text, ts, imageUrls) {
+        const id = 'bot-his-' + Math.random().toString(36).slice(2);
+        const html = `
+        <div class="msg bot" id="${id}">
+          <div class="bot-head">
+            <div class="avatar bot">${BOT_AVATAR_SVG}</div>
+            <span class="bot-name">掌柜智库助手</span>
+            <span class="meta">${formatTime(ts)}</span>
+          </div>
+          <div class="content"><div class="answer"></div></div>
+        </div>`;
+        chatEl.querySelector('.thread').insertAdjacentHTML('beforeend', html);
+        const el = document.getElementById(id);
+        if (el) {
+            const answerEl = el.querySelector('.answer');
+            renderAnswerWithImages(answerEl, text || '', imageUrls || []);
+        }
+        scrollToBottom();
+    }
+
+    // 骨架只含"正在思考"流光等待态+答案容器,不预置任何状态面板
+    function addBotMsgSkeleton() {
+        const id = 'bot-' + Math.random().toString(36).slice(2);
+        const html = `
+        <div class="msg bot" id="${id}">
+          <div class="bot-head">
+            <div class="avatar bot">${BOT_AVATAR_SVG}</div>
+            <span class="bot-name">掌柜智库助手</span>
+            <span class="meta">${nowTime()}</span>
+          </div>
+          <div class="content">
+            <div class="typing"><span class="typing-text">正在思考</span></div>
+            <div class="answer"></div>
+          </div>
+        </div>`;
+        chatEl.querySelector('.thread').insertAdjacentHTML('beforeend', html);
+        scrollToBottom();
+        const botMsgEl = document.getElementById(id);
+        // ==================== AI修改 开始 ====================
+        // 从用户点击发送开始计时，确保意图识别和后续检索都包含在总耗时里。
+        if (botMsgEl) botMsgEl.dataset.queryStartedAt = String(performance.now());
+        // ==================== AI修改 结束 ====================
+        return botMsgEl;
+    }
+
+    // 判断是否为知识库检索链路——进度节点里出现检索类节点才算
+    // 闲聊链路只有"确认问题产品/生成答案"两类节点,不会命中
+    function isPipelineProgress(doneList, runningList) {
+        const names = [...(doneList || []), ...(runningList || [])].join(',');
+        return /搜索|融合|重排/.test(names);
+    }
+
+    // AI修改: 查询链路节点英文名→中文状态文案映射(用于流光状态行"正在XXX…")
+    const QUERY_NODE_LABELS = {
+        'node_item_name_confirm': '确认问题产品',
+        'node_search_embedding': '向量检索知识库',
+        'node_search_embedding_hyde': '假设文档检索',
+        'node_rrf': '融合多路检索结果',
+        'node_rerank': '重排筛选候选内容',
+        'node_web_search_mcp': '联网搜索',
+        'node_answer_output': '生成答案'
+    };
+
+    function qNodeLabel(name) {
+        return QUERY_NODE_LABELS[name] || name.replace(/^node_/, '').replace(/_/g, ' ');
+    }
+
+    // AI修改: 动态状态行(ChatGPT/Codex风格)——挂在名字行下方的文档流里,
+    // 与bot-head完全分离,展开时间线不会再把"掌柜智库助手"挤到面板中间
+    function ensureProcPanel(botMsgEl) {
+        let wrap = botMsgEl.querySelector('.proc-wrap');
+        if (wrap) return wrap;
+        const content = botMsgEl.querySelector('.content');
+        const answer = botMsgEl.querySelector('.answer');
+        wrap = document.createElement('div');
+        wrap.className = 'proc-wrap';
+        wrap.innerHTML = `
+            <button class="proc-toggle" type="button">
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+                <span class="proc-live-group">
+                    <span class="live">正在检索…</span>
+                    <span class="proc-subtitle">实时查询链路</span>
+                </span>
+                <span class="proc-elapsed">0.0s</span>
+                <span class="count proc-step-count">0/0</span>
+            </button>
+            <ul class="proc-list"></ul>`;
+        content.insertBefore(wrap, answer);
+        startProcElapsedTimer(wrap, botMsgEl.dataset.queryStartedAt);
+        // 状态行出现后,顶部的"..."等待动画功成身退,避免两套等待指示并存
+        const typing = botMsgEl.querySelector('.typing');
+        if (typing) typing.remove();
+        wrap.querySelector('.proc-toggle').addEventListener('click', () => wrap.classList.toggle('open'));
+        return wrap;
+    }
+
+    // 渲染检索进度(仅知识库问题会调用)
+    // 状态行实时显示当前正在执行的步骤,右侧淡淡的N/M计数,点击箭头展开时间线明细
+    function renderProgress(botMsgEl, doneList, runningList, status, durations) {
+        const wrap = ensureProcPanel(botMsgEl);
+        const btn = wrap.querySelector('.proc-toggle');
+        const live = btn.querySelector('.live');
+        const count = btn.querySelector('.count');
+        const ul = wrap.querySelector('.proc-list');
+        const done = Array.isArray(doneList) ? doneList : [];
+        const running = Array.isArray(runningList) ? runningList : [];
+        const durationMap = durations || {};
+
+        let totalDuration = 0;
+        for (const k in durationMap) totalDuration += durationMap[k];
+
+        if (status === 'completed') {
+            // 完成:停掉流光,绿色对勾文案；总耗时在final事件到达时冻结。
+            btn.className = 'proc-toggle done';
+            live.textContent = `✓ 查询完成 · ${done.length}步`;
+            btn.querySelector('.proc-subtitle').textContent = totalDuration > 0
+                ? `节点耗时 ${formatDuration(totalDuration)}` : '正在收尾…';
+            wrap.classList.remove('open');
+        } else if (status === 'failed') {
+            btn.className = 'proc-toggle fail';
+            live.textContent = '✕ 查询失败';
+            btn.querySelector('.proc-subtitle').textContent = '请展开查看已完成步骤';
+        } else {
+            // 进行中: 流光文字 = 正在执行的那一步(无运行节点时显示最近完成的一步)
+            btn.className = 'proc-toggle';
+            const cur = running.length ? running[0] : done[done.length - 1];
+            live.textContent = cur ? `正在${qNodeLabel(cur)}…` : '正在检索…';
+            count.textContent = `${done.length}/${done.length + running.length}`;
+        }
+
+        ul.innerHTML = '';
+        for (const item of done) {
+            const li = document.createElement('li');
+            const span = document.createElement('span');
+            span.textContent = qNodeLabel(item);
+            li.appendChild(span);
+            if (durationMap[item] !== undefined) {
+                const d = document.createElement('span');
+                d.className = 'proc-duration';
+                d.textContent = formatDuration(durationMap[item]);
+                li.appendChild(d);
+            }
+            li.className = 'proc-done';
+            ul.appendChild(li);
+        }
+        for (const item of running) {
+            const li = document.createElement('li');
+            const span = document.createElement('span');
+            span.textContent = `正在${qNodeLabel(item)}…`;
+            li.appendChild(span);
+            const d = document.createElement('span');
+            d.className = 'proc-duration';
+            d.textContent = '进行中';
+            li.appendChild(d);
+            li.className = 'proc-running';
+            ul.appendChild(li);
+        }
+    }
+
+    async function loadHistory() {
+        try {
+            const res = await fetch(`${API_BASE}/history/${sessionId}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            const nodes = Array.from(chatEl.querySelectorAll('.msg'));
+            for (let i = 1; i < nodes.length; i++) nodes[i].remove();
+            if (items.length === 0) {
+                scrollToBottom();
+                return;
+            }
+            for (const item of items) {
+                if (item.role === 'user') {
+                    addUserMsg(item.text || '');
+                } else {
+                    addBotMsgWithTime(item.text || '', item.ts, item.image_urls || []);
+                }
+            }
+            scrollToBottom();
+        } catch (_) {
+        }
+    }
+
+    async function submitQuery(text) {
+        const res = await fetch(`${API_BASE}/query`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({query: text, session_id: sessionId})
+        });
+        if (!res.ok) {
+            const msg = await res.text();
+            throw new Error(msg || '请求失败');
+        }
+        return await res.json();
+    }
+
+    async function onSend() {
+        const text = (inputEl.value || '').trim();
+        if (!text) return;
+        inputEl.value = '';
+        inputEl.style.height = 'auto';
+        addUserMsg(text);
+        const botMsgEl = addBotMsgSkeleton();
+        sendBtn.disabled = true;
+
+        try {
+            const data = await submitQuery(text);
+            // ==================== AI修改 开始 ====================
+            // 查询成功后同步首条问题标题；不再只刷新列表而保持“新会话”。
+            await ensureFirstSessionTitle(text);
+            // ==================== AI修改 结束 ====================
+            const {task_id} = data;
+            const contentEl = botMsgEl.querySelector('.content');
+            const answerEl = contentEl.querySelector('.answer');
+
+            const es = new EventSource(`${API_BASE}/stream/${task_id}`);
+            let rawAnswerText = '';
+
+            es.addEventListener('progress', (e) => {
+                try {
+                    const d = JSON.parse(e.data || '{}');
+                    // 只有检索链路才显示状态面板,闲聊全程只有"..."
+                    if (isPipelineProgress(d.done_list, d.running_list)) {
+                        renderProgress(botMsgEl, d.done_list, d.running_list, d.status, d.durations);
+                    }
+                    if (d && d.status === 'completed') {
+                        const typing = botMsgEl.querySelector('.typing');
+                        if (typing) typing.remove();
+                        sendBtn.disabled = false;
+                    }
+                } catch (_) {
+                }
+            });
+
+            // AI修改: 上下文占用进度条更新 - 与记忆挂钩版
+            // 分段显示: 记忆(紫) + 检索(蓝) + 问题(灰), 长期记忆摘要激活时显示"已压缩"
+            es.addEventListener('context_info', (e) => {
+                try {
+                    const d = JSON.parse(e.data || '{}');
+                    const bar = document.getElementById('ctxBar');
+                    const txt = document.getElementById('ctxText');
+                    if (!bar || !txt || d.chars == null) return;
+                    bar.classList.add('show');
+                    const limit = d.limit || 16000;
+                    // 各段宽度 = 该段字符数 / limit * 100%
+                    const memPct = Math.min(100, Math.round((d.history_chars || 0) * 100 / limit));
+                    const ctxPct = Math.min(100, Math.round((d.context_chars || 0) * 100 / limit));
+                    const qPct   = Math.min(100, Math.round((d.question_chars || 0) * 100 / limit));
+                    const segMem = document.getElementById('ctxSegMem');
+                    const segCtx = document.getElementById('ctxSegCtx');
+                    const segQ   = document.getElementById('ctxSegQ');
+                    if (segMem) segMem.style.width = memPct + '%';
+                    if (segCtx) segCtx.style.width = ctxPct + '%';
+                    if (segQ)   segQ.style.width   = qPct + '%';
+                    // 文案: 记忆X字 · 检索X字 · 问题X字, 超阈值加预警色
+                    const pct = Math.min(100, d.pct || 0);
+                    let parts = [];
+                    if (d.history_chars != null) parts.push('记忆 ' + d.history_chars + '字');
+                    if (d.context_chars != null && d.context_chars > 0) parts.push('检索 ' + d.context_chars + '字');
+                    if (d.question_chars != null && d.question_chars > 0) parts.push('问题 ' + d.question_chars + '字');
+                    let label = parts.join(' · ');
+                    if (d.summary_active) label = '已压缩 · ' + label;
+                    // 超阈值时文字变色提示
+                    txt.style.color = pct >= 85 ? '#ef4444' : (pct >= 60 ? '#f59e0b' : '');
+                    txt.textContent = label + ' (' + pct + '%)';
+                } catch (_) {}
+            });
+
+            es.addEventListener('delta', (e) => {
+                try {
+                    const typing = botMsgEl.querySelector('.typing');
+                    if (typing) typing.remove();
+                    const d = JSON.parse(e.data || '{}');
+                    const delta = d.delta || '';
+                    if (delta) {
+                        rawAnswerText += delta;
+                        renderAnswerWithImages(answerEl, rawAnswerText, []);
+                        scrollToBottom();
+                    }
+                } catch (_) {
+                }
+            });
+
+            es.addEventListener('final', (e) => {
+                const typing = botMsgEl.querySelector('.typing');
+                if (typing) typing.remove();
+
+                // 收尾——冻结总耗时，状态行置为“查询完成”，进行中节点全部置为完成。
+                const wrap = botMsgEl.querySelector('.proc-wrap');
+                if (wrap) {
+                    const elapsed = stopProcElapsedTimer(wrap);
+                    const ul = wrap.querySelector('.proc-list');
+                    if (ul) {
+                        ul.querySelectorAll('li.proc-running').forEach(li => {
+                            li.className = 'proc-done';
+                        });
+                    }
+                    const btn = wrap.querySelector('.proc-toggle');
+                    if (btn) {
+                        const totalDone = ul ? ul.querySelectorAll('li').length : 0;
+                        btn.className = 'proc-toggle done';
+                        btn.querySelector('.live').textContent = `✓ 查询完成 · ${totalDone}步`;
+                        btn.querySelector('.proc-elapsed').textContent = formatDuration(elapsed || 0.1);
+                        btn.querySelector('.proc-subtitle').textContent = '本轮处理已完成';
+                    }
+                    wrap.classList.remove('open');
+                }
+
+                try {
+                    const d = JSON.parse(e.data || '{}');
+                    const finalText = (d && typeof d.answer === 'string' && d.answer.trim().length > 0)
+                        ? d.answer : (rawAnswerText || answerEl.textContent || '');
+                    renderAnswerWithImages(answerEl, finalText, d.image_urls || []);
+                } catch (_) {
+                }
+                es.close();
+                sendBtn.disabled = false;
+            });
+
+            es.addEventListener('error', (e) => {
+                const typing = botMsgEl.querySelector('.typing');
+                if (typing) typing.remove();
+                const progress = botMsgEl.querySelector('.proc-wrap');
+                if (progress) {
+                    const elapsed = stopProcElapsedTimer(progress);
+                    progress.classList.remove('open');
+                    const btn = progress.querySelector('.proc-toggle');
+                    if (btn) {
+                        btn.className = 'proc-toggle fail';
+                        btn.querySelector('.live').textContent = '✕ 查询失败';
+                        btn.querySelector('.proc-elapsed').textContent = formatDuration(elapsed || 0.1);
+                        btn.querySelector('.proc-subtitle').textContent = '连接中断或服务异常';
+                    }
+                }
+                try {
+                    const msg = e && e.data ? (JSON.parse(e.data).error || 'SSE 连接中断/失败') : 'SSE 连接中断/失败';
+                    rawAnswerText += `\n\n（错误：${msg}）`;
+                } catch (_) {
+                    rawAnswerText += `\n\n（错误：SSE 连接中断/失败）`;
+                }
+                renderAnswerWithImages(answerEl, rawAnswerText, []);
+                es.close();
+                sendBtn.disabled = false;
+            });
+        } catch (e) {
+            const typing = botMsgEl.querySelector('.typing');
+            if (typing) typing.remove();
+            // 错误提示同样渲染到content区,保持Agent风格
+            const contentEl = botMsgEl.querySelector('.content');
+            const errEl = document.createElement('div');
+            errEl.className = 'answer';
+            errEl.innerHTML = `<div class="answer-text"></div>`;
+            errEl.querySelector('.answer-text').textContent = `请求失败：${e.message || e}`;
+            contentEl.appendChild(errEl);
+            sendBtn.disabled = false;
+        }
+    }
+
+    sendBtn.addEventListener('click', onSend);
+    inputEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onSend();
+        }
+    });
+
+    // AI修改: 输入框高度随内容自适应(1~6行)
+    inputEl.addEventListener('input', () => {
+        inputEl.style.height = 'auto';
+        inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+    });
+
+    // AI修改: 快捷提问胶囊——点击填入输入框并聚焦(不直接发送,用户可改)
+    document.querySelectorAll('.chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            inputEl.value = chip.dataset.q || '';
+            inputEl.focus();
+        });
+    });
+
+    btnClear.addEventListener('click', async () => {
+        if (!confirm('确定要清空当前会话的历史记录吗？这将无法恢复。')) return;
+        try {
+            const res = await fetch(`${API_BASE}/history/${sessionId}`, {method: 'DELETE'});
+            if (!res.ok) alert('服务端清空失败，仅清空本地显示');
+        } catch (e) {
+            alert('服务端清空失败，仅清空本地显示');
+        }
+        const nodes = Array.from(chatEl.querySelectorAll('.msg'));
+        for (let i = 1; i < nodes.length; i++) nodes[i].remove();
+        scrollToBottom();
+    });
+
+    /* ================= 导入逻辑(独立作用域) ================= */
+    (function () {
+        // ==================== AI修改 开始 ====================
+        // 教育资料专用导入：课程和题目允许单独提交，至少选择一份即可。
+        const eduCourseInput = document.getElementById('eduCourseInput');
+        const eduQuestionInput = document.getElementById('eduQuestionInput');
+        const eduImportBtn = document.getElementById('eduImportBtn');
+        const eduImportStatus = document.getElementById('eduImportStatus');
+        const eduCourseName = document.getElementById('eduCourseName');
+        const eduQuestionName = document.getElementById('eduQuestionName');
+        let eduCourseFile = null;
+        let eduQuestionFile = null;
+        let educationCatalogMode = 'courses';
+
+        async function loadEducationCatalog(mode = educationCatalogMode) {
+            educationCatalogMode = mode;
+            const catalog = document.getElementById('educationCatalog');
+            const courseTab = document.getElementById('catalogCourseTab');
+            const questionTab = document.getElementById('catalogQuestionTab');
+            courseTab.classList.toggle('active', mode === 'courses');
+            questionTab.classList.toggle('active', mode === 'questions');
+            catalog.innerHTML = '<div class="catalog-empty">正在读取教育目录…</div>';
+            try {
+                const url = API_BASE + (mode === 'courses' ? '/education/courses' : '/education/questions');
+                const response = await fetch(url);
+                const data = response.ok ? await response.json() : {};
+                const items = Array.isArray(data.items) ? data.items : [];
+                if (items.length === 0) {
+                    catalog.innerHTML = '<div class="catalog-empty">暂时没有已入库的' +
+                        (mode === 'courses' ? '课程' : '题目') + '</div>';
+                    return;
+                }
+                catalog.innerHTML = '';
+                for (const item of items.slice(0, 40)) {
+                    const card = document.createElement('div');
+                    card.className = 'catalog-item';
+                    if (mode === 'courses') {
+                        card.innerHTML = '<strong>' + escapeHtml(item.course_name || '未命名课程') + '</strong>' +
+                            '<span>' + escapeHtml(item.course_category || item.chapter_name || '课程资料') + '</span>';
+                    } else {
+                        card.innerHTML = '<strong>' + escapeHtml(item.question_code || '未命名题目') + '</strong>' +
+                            '<span>' + escapeHtml((item.question_type || '题目') + ' · ' +
+                                (item.question_bank_name || '未命名题库')) + '</span>';
+                    }
+                    catalog.appendChild(card);
+                }
+            } catch (_) {
+                catalog.innerHTML = '<div class="catalog-empty">教育目录暂时不可用，请检查服务连接</div>';
+            }
+        }
+
+        document.getElementById('catalogCourseTab').addEventListener('click', () => loadEducationCatalog('courses'));
+        document.getElementById('catalogQuestionTab').addEventListener('click', () => loadEducationCatalog('questions'));
+
+        function refreshEducationPicker() {
+            eduCourseName.textContent = eduCourseFile ? eduCourseFile.name : '点击选择课程资料';
+            eduQuestionName.textContent = eduQuestionFile ? eduQuestionFile.name : '点击选择题目资料';
+            eduImportBtn.disabled = !(eduCourseFile || eduQuestionFile);
+            if (eduCourseFile || eduQuestionFile) {
+                eduImportStatus.textContent = '资料已就绪，可以开始导入';
+            }
+        }
+
+        eduCourseInput.addEventListener('change', event => {
+            eduCourseFile = event.target.files[0] || null;
+            refreshEducationPicker();
+        });
+        eduQuestionInput.addEventListener('change', event => {
+            eduQuestionFile = event.target.files[0] || null;
+            refreshEducationPicker();
+        });
+
+        async function pollEducationImport(taskId) {
+            try {
+                const res = await fetch(API_BASE + '/education/status/' + taskId);
+                const data = await res.json();
+                if (data.status === 'completed') {
+                    const result = data.result || {};
+                    document.getElementById('eduCourseCount').textContent = result.course_count ?? '0';
+                    document.getElementById('eduQuestionCount').textContent = result.question_count ?? '0';
+                    document.getElementById('eduItemCount').textContent = result.item_count ?? '0';
+                    eduImportStatus.textContent = '导入完成：' + (result.course_count || 0) +
+                        ' 个课程系列，' + (result.question_count || 0) + ' 道题';
+                    eduImportBtn.disabled = false;
+                    loadEducationCatalog('courses');
+                    return;
+                }
+                if (data.status === 'failed') {
+                    eduImportStatus.textContent = '导入失败：' + (data.error_msg || '请检查服务日志');
+                    eduImportBtn.disabled = false;
+                    return;
+                }
+                eduImportStatus.textContent = '教育数据处理中：' +
+                    ((data.running_list || []).join('、') || '排队中');
+                setTimeout(() => pollEducationImport(taskId), 1200);
+            } catch (_) {
+                eduImportStatus.textContent = '正在等待教育导入任务响应…';
+                setTimeout(() => pollEducationImport(taskId), 1600);
+            }
+        }
+
+        eduImportBtn.addEventListener('click', async () => {
+            if (!eduCourseFile && !eduQuestionFile) return;
+            eduImportBtn.disabled = true;
+            eduImportStatus.textContent = '正在上传教育资料…';
+            const formData = new FormData();
+            // ==================== AI修改 开始 ====================
+            // 只提交用户实际选择的文件，后端因此可以只导入课程或只导入题库。
+            if (eduCourseFile) formData.append('course_file', eduCourseFile);
+            if (eduQuestionFile) formData.append('question_file', eduQuestionFile);
+            // ==================== AI修改 结束 ====================
+            try {
+                const response = await fetch(API_BASE + '/education/import', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(result.detail || '教育资料上传失败');
+                eduImportStatus.textContent = '已提交，正在解析和向量化…';
+                pollEducationImport(result.task_id);
+            } catch (error) {
+                eduImportStatus.textContent = '导入失败：' + (error.message || error);
+                eduImportBtn.disabled = false;
+            }
+        });
+        loadEducationCatalog('courses');
+        // ==================== AI修改 结束 ====================
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = 'var(--accent)';
+            dropZone.style.background = 'var(--accent-soft)';
+        });
+
+        dropZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = '';
+            dropZone.style.background = '';
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.borderColor = '';
+            dropZone.style.background = '';
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        // ==================== AI修改 开始 ====================
+        // 文件夹选择: webkitdirectory 让浏览器递归读取整个文件夹,
+        // 返回的 File 对象带 webkitRelativePath(如 "掌柜智库/01_xxx.md")
+        // handleFiles 里已经按文件名建索引配对, 这里只需把文件列表传进去
+        // ==================== AI修改 结束 ====================
+        const folderInput = document.getElementById('folderInput');
+        const folderBtn = document.getElementById('folderBtn');
+        folderBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            folderInput.click();
+        });
+        folderInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFiles(e.target.files);
+            }
+        });
+
+        // ==================== AI修改 开始 ====================
+        // 原逻辑: 每个选中文件各自独立上传。上传 md 时 images/ 里的图片不会跟着上,
+        //         导致 node_md_img 找不到图片直接 0s 秒过, 图片信息全部丢失。
+        // 改进: 选中一批文件后先分组——
+        //   1. 主文档(.md/.pdf/.docx) 各自发起一次上传
+        //   2. 图片文件(png/jpg/...) 按文件名建索引
+        //   3. md 文档上传前先读文本, 解析出它实际引用的图片名,
+        //      只把这文档自己引用的图片一起塞进同一次请求(不重复传共享图库)
+        // 后端 /upload 会把主文档存到 任务目录/、图片存到 任务目录/images/
+        // ==================== AI修改 结束 ====================
+        const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'];
+        const DOC_EXTS = ['md', 'pdf', 'docx'];
+        const fileExt = (name) => name.toLowerCase().split('.').pop();
+
+        async function handleFiles(files) {
+            const all = Array.from(files);
+            const docs = all.filter(f => DOC_EXTS.includes(fileExt(f.name)));
+            const images = all.filter(f => IMAGE_EXTS.includes(fileExt(f.name)));
+            // 图片按文件名建索引(md 里引用的是 images/xxx.png, 只需按文件名匹配)
+            const imageMap = new Map(images.map(f => [f.name, f]));
+            if (docs.length === 0) {
+                alert('请至少选择一个 .md / .pdf / .docx 文档（图片仅作为 md 的附属一起上传）');
+                return;
+            }
+            for (const doc of docs) {
+                let refImages = [];
+                if (fileExt(doc.name) === 'md' && imageMap.size > 0) {
+                    // 读取 md 文本, 找出它引用的图片文件名, 只带上自己用的图
+                    // ==================== AI修改 开始 ====================
+                    // 同时支持 Markdown ![](path) 和 HTML <img src="path"> 两种语法
+                    // (项目文档123张图全用 <img src="images/xxx.jpg"> 标签引用)
+                    // ==================== AI修改 结束 ====================
+                    const text = await doc.text();
+                    const mdRefs  = Array.from(text.matchAll(/\]\([^)]*?([^/()\s]+\.(?:png|jpe?g|gif|bmp|webp))\)/gi)).map(m => m[1]);
+                    const htmlRefs = Array.from(text.matchAll(/<img[^>]*?src\s*=\s*["']([^"']+\.(?:png|jpe?g|gif|bmp|webp))["']/gi)).map(m => m[1].split('/').pop());
+                    const refs = new Set([...mdRefs, ...htmlRefs]);
+                    refImages = Array.from(refs).map(n => imageMap.get(n)).filter(Boolean);
+                }
+                uploadFile(doc, refImages);
+            }
+        }
+
+        function updateProgressUI(wrapper, percentage) {
+            const bar = wrapper.querySelector('.progress-bar');
+            const text = wrapper.querySelector('.progress-text');
+            const safePercentage = Math.min(Math.max(percentage, 0), 100);
+            bar.style.width = safePercentage + '%';
+            text.textContent = Math.round(safePercentage) + '%';
+            if (safePercentage >= 100) {
+                bar.style.background = 'linear-gradient(90deg, #059669, #34d399)';
+            } else if (safePercentage < 10) {
+                bar.style.background = 'linear-gradient(90deg, #d97706, #fbbf24)';
+            } else {
+                bar.style.background = 'linear-gradient(90deg, #2563eb, #60a5fa)';
+            }
+        }
+
+        // ==================== AI修改 开始 ====================
+        // 抽出"文件条目DOM"的创建, 网页上传 / 本地路径导入 两个入口共用同一套卡片样式
+        // ==================== AI修改 结束 ====================
+        function createFileItem(name, sizeText) {
+            const id = 'file-' + Math.random().toString(36).slice(2, 10);
+            const html = `
+            <div class="file-item" id="${id}">
+                <div class="file-info">
+                    <div class="file-header">
+                        <span class="file-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+                        <span class="file-size">${sizeText}</span>
+                    </div>
+                    <div class="progress-wrapper">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar"></div>
+                        </div>
+                        <div class="progress-text">0%</div>
+                    </div>
+                    <details class="log-details">
+                        <summary>准备上传...</summary>
+                        <ul class="log-list"></ul>
+                    </details>
+                </div>
+                <div class="status-badge status-uploading">上传中...</div>
+            </div>`;
+            fileList.insertAdjacentHTML('afterbegin', html);
+            return document.getElementById(id);
+        }
+
+        async function uploadFile(file, refImages = []) {
+            const isPDF = file.name.toLowerCase().endsWith('.pdf');
+            const totalNodes = isPDF ? 8 : 7;
+
+            const itemEl = createFileItem(file.name, (file.size / 1024).toFixed(2) + ' KB');
+            const statusBadge = itemEl.querySelector('.status-badge');
+            const progressWrapper = itemEl.querySelector('.progress-wrapper');
+            const logListEl = itemEl.querySelector('.log-list');
+
+            // ==================== AI修改 开始 ====================
+            // 字段名从 file 改为 files(后端改为多文件接口);
+            // md 文档连同它引用的图片一起发, 后端把图片放到 md 同级的 images/ 目录
+            // ==================== AI修改 结束 ====================
+            const formData = new FormData();
+            formData.append('files', file);
+            for (const img of refImages) formData.append('files', img);
+
+            try {
+                progressWrapper.style.display = 'block';
+                const uploadPercentage = (1 / totalNodes) * 100;
+                updateProgressUI(progressWrapper, Math.min(uploadPercentage, 10));
+
+                const initialLog = document.createElement('li');
+                initialLog.textContent = "开始上传文件...";
+                initialLog.className = "log-running";
+                logListEl.appendChild(initialLog);
+
+                const response = await fetch(`${API_BASE}/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) throw new Error('Upload failed');
+
+                const result = await response.json();
+                const taskId = result.task_id;
+
+                updateProgressUI(progressWrapper, uploadPercentage);
+                statusBadge.textContent = '处理中';
+                statusBadge.className = 'status-badge status-processing';
+
+                pollStatus(taskId, itemEl, totalNodes);
+            } catch (error) {
+                console.error(error);
+                statusBadge.textContent = '上传失败';
+                statusBadge.className = 'status-badge status-error';
+                updateProgressUI(progressWrapper, 0);
+                const errLog = document.createElement('li');
+                errLog.textContent = "❌ 网络请求失败或服务器异常";
+                errLog.style.color = "#dc2626";
+                logListEl.appendChild(errLog);
+            }
+        }
+
+        // ==================== AI修改 开始 ====================
+        // 本地文件夹导入: 把服务器本机的文件夹路径交给后端, 由后端扫磁盘完成
+        // "找文档→解析md引用→自动配图片→导入"全流程, 前端只负责提交路径和轮询进度。
+        // (浏览器安全沙箱不允许网页自己读磁盘文件, 所以图片配对必须由后端做)
+        const localDirInput = document.getElementById('localDirInput');
+        const localImportBtn = document.getElementById('localImportBtn');
+
+        localImportBtn.addEventListener('click', async () => {
+            const dir = localDirInput.value.trim();
+            if (!dir) { alert('请先粘贴文件夹路径，例如 E:\\课程资料\\项目文档\\掌柜智库'); return; }
+
+            localImportBtn.disabled = true;
+            localImportBtn.textContent = '扫描中...';
+            try {
+                const resp = await fetch(`${API_BASE}/import_local`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ dir })
+                });
+                const result = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(result.detail || '导入失败，请检查路径和服务日志');
+
+                // 每个文档生成一个进度卡片, 复用与网页上传相同的轮询渲染
+                for (const t of result.tasks) {
+                    const totalNodes = t.filename.toLowerCase().endsWith('.pdf') ? 8 : 7;
+                    const itemEl = createFileItem(t.filename, `本地导入 · ${t.images}张图`);
+                    const statusBadge = itemEl.querySelector('.status-badge');
+                    const progressWrapper = itemEl.querySelector('.progress-wrapper');
+                    const logListEl = itemEl.querySelector('.log-list');
+                    progressWrapper.style.display = 'block';
+                    statusBadge.textContent = '排队中';
+                    statusBadge.className = 'status-badge status-processing';
+                    const li = document.createElement('li');
+                    li.textContent = `已提交本地导入(自动配对${t.images}张图片), 等待处理...`;
+                    li.className = 'log-running';
+                    logListEl.appendChild(li);
+                    pollStatus(t.task_id, itemEl, totalNodes);
+                }
+                localDirInput.value = '';
+            } catch (e) {
+                alert('本地导入失败: ' + e.message);
+            } finally {
+                localImportBtn.disabled = false;
+                localImportBtn.textContent = '扫描导入';
+            }
+        });
+        // ==================== AI修改 结束 ====================
+
+        // 导入节点英文名→中文显示名映射
+        const NODE_LABELS = {
+            'node_entry': '文件入口识别',
+            'node_pdf_to_md': 'PDF文档解析',
+            'node_docx_to_md': 'DOCX文档解析',
+            'node_md_img': '图片提取与摘要',
+            'node_document_split': '文档切片',
+            'node_item_name_recognition': '主体识别',
+            'node_bge_embedding': '向量生成',
+            'node_import_milvus': '写入向量库',
+            'node_test': '测试节点'
+        };
+        function nodeLabel(name) {
+            if (NODE_LABELS[name]) return NODE_LABELS[name];
+            // 兜底:去掉node_前缀,下划线转空格
+            return name.replace(/^node_/, '').replace(/_/g, ' ');
+        }
+
+        function renderLogsAndCalculateProgress(itemEl, doneList, runningList, totalNodes, durations) {
+            const logSummary = itemEl.querySelector('.log-details summary');
+            const logListEl = itemEl.querySelector('.log-list');
+            const done = Array.isArray(doneList) ? doneList : [];
+            const running = Array.isArray(runningList) ? runningList : [];
+            const durationMap = durations || {};
+
+            let currentPercentage = (done.length / totalNodes) * 100;
+            if (running.length > 0) currentPercentage += (0.5 / totalNodes) * 100;
+            if (currentPercentage >= 100) currentPercentage = 95;
+
+            let totalDuration = 0;
+            for (const key in durationMap) totalDuration += durationMap[key];
+            const totalDurationText = totalDuration > 0 ? ` | 总耗时: ${formatDuration(totalDuration)}` : '';
+
+            logSummary.textContent = `运行日志 (已完成: ${done.length}, 进行中: ${running.length}, 共 ${totalNodes} 步${totalDurationText})`;
+
+            logListEl.innerHTML = '';
+            for (const item of done) {
+                if (item === 'upload_file') continue;
+                const li = document.createElement('li');
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = `${nodeLabel(item)} 执行完成`;
+                li.appendChild(nameSpan);
+                if (durationMap[item] !== undefined) {
+                    const durationSpan = document.createElement('span');
+                    durationSpan.className = 'log-duration';
+                    durationSpan.textContent = formatDuration(durationMap[item]);
+                    li.appendChild(durationSpan);
+                }
+                li.className = 'log-done';
+                logListEl.appendChild(li);
+            }
+            for (const item of running) {
+                const li = document.createElement('li');
+                li.textContent = `正在处理 ${nodeLabel(item)}...`;
+                li.className = 'log-running';
+                logListEl.appendChild(li);
+            }
+            logListEl.scrollTop = logListEl.scrollHeight;
+            return currentPercentage;
+        }
+
+        function pollStatus(taskId, itemEl, totalNodes) {
+            const statusBadge = itemEl.querySelector('.status-badge');
+            const progressWrapper = itemEl.querySelector('.progress-wrapper');
+            const logDetails = itemEl.querySelector('.log-details');
+            let stopped = false;
+            let emptyCount = 0;  // 连续遇到空状态(未知任务)的次数
+            // ==================== AI修改 开始 ====================
+            // 网络错误单独计数，和“状态为空”区分，便于识别后端进程崩溃。
+            let consecutiveNetworkErrors = 0;
+            // ==================== AI修改 结束 ====================
+
+            const interval = setInterval(async () => {
+                if (stopped) return;
+                // ==================== AI修改 开始 ====================
+                // 后端进程原生崩溃后，fetch会连续失败；累计失败达到阈值时
+                // 结束轮询并明确提示，避免卡片永久停在“主体识别”。
+                // ==================== AI修改 结束 ====================
+                try {
+                    const res = await fetch(`${API_BASE}/status/${taskId}`);
+                    if (!res.ok) throw new Error('Status request failed');
+                    const data = await res.json();
+                    if (stopped) return;
+                    // ==================== AI修改 开始 ====================
+                    // 服务恢复后重新计数，短暂网络抖动不会误判任务失败。
+                    consecutiveNetworkErrors = 0;
+                    // ==================== AI修改 结束 ====================
+
+                    const calculatedPercentage = renderLogsAndCalculateProgress(itemEl, data.done_list, data.running_list, totalNodes, data.durations);
+
+                    if (data.status === 'completed') {
+                        stopped = true;
+                        clearInterval(interval);
+                        statusBadge.textContent = '已完成';
+                        statusBadge.className = 'status-badge status-completed';
+                        updateProgressUI(progressWrapper, 100);
+                        setTimeout(() => logDetails.open = false, 1000);
+                    } else if (data.status === 'failed') {
+                        stopped = true;
+                        clearInterval(interval);
+                        statusBadge.textContent = '失败';
+                        statusBadge.className = 'status-badge status-error';
+                        const logListEl = itemEl.querySelector('.log-list');
+                        // ==================== AI修改 开始 ====================
+                        // 失败时展示后端返回的真实错误原因(不用再翻控制台满屏日志),
+                        // 并自动展开日志面板让错误一眼可见
+                        const errMsg = (data.error_msg || '').trim();
+                        const errLog = document.createElement('li');
+                        errLog.innerHTML = errMsg
+                            ? '❌ 导入失败：' + escapeHtml(errMsg)
+                            : '❌ 工作流执行失败中止(未捕获到错误详情)';
+                        errLog.style.color = '#dc2626';
+                        errLog.style.whiteSpace = 'pre-wrap';
+                        logListEl.appendChild(errLog);
+                        // 自动展开日志面板
+                        const logDetails = itemEl.querySelector('.log-details');
+                        if (logDetails) logDetails.open = true;
+                        // ==================== AI修改 结束 ====================
+                    } else if (data.status === 'processing') {
+                        updateProgressUI(progressWrapper, calculatedPercentage);
+                    } else if (data.status === '') {
+                        // ==================== AI修改 开始 ====================
+                        // 导入/上传任务未检测到状态(status为空), 通常是服务未重启(跑旧进程)
+                        // 或多worker部署导致内存任务字典跨进程不共享。给约60秒宽限(40×1.5s),
+                        // 之后显式提示, 避免卡片永远停在"排队中"静默假死, 帮用户定位。
+                        // ==================== AI修改 结束 ====================
+                        emptyCount++;
+                        if (emptyCount > 40) {
+                            stopped = true;
+                            clearInterval(interval);
+                            statusBadge.textContent = '状态丢失';
+                            statusBadge.className = 'status-badge status-error';
+                            const warnLog = document.createElement('li');
+                            warnLog.textContent = '⚠️ 未检测到任务状态：可能服务未重启或多进程部署，请以单进程方式重启服务';
+                            warnLog.style.color = '#d97706';
+                            logListEl.appendChild(warnLog);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Polling error', e);
+                    // ==================== AI修改 开始 ====================
+                    // 连续20次约30秒无法获取状态，认为后端已经断开。
+                    // 这是对Python/CUDA原生崩溃无法被try/except捕获的前端兜底。
+                    consecutiveNetworkErrors++;
+                    if (consecutiveNetworkErrors >= 20) {
+                        stopped = true;
+                        clearInterval(interval);
+                        statusBadge.textContent = '后端连接中断';
+                        statusBadge.className = 'status-badge status-error';
+                        const logListEl = itemEl.querySelector('.log-list');
+                        const disconnectLog = document.createElement('li');
+                        disconnectLog.textContent = '❌ 后端连接中断，任务可能因服务异常退出，请重启服务后重新导入';
+                        disconnectLog.style.color = '#dc2626';
+                        logListEl.appendChild(disconnectLog);
+                        const logDetails = itemEl.querySelector('.log-details');
+                        if (logDetails) logDetails.open = true;
+                    }
+                    // ==================== AI修改 结束 ====================
+                }
+            }, 1500);
+        }
+    })();
+
+    /* ================= 启动 ================= */
+    apiHealth();
+    loadSessions();
+    loadHistory();
+    setTimeout(() => inputEl.focus(), 200);
+</script>
+</body>
+</html>

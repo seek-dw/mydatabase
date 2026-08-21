@@ -208,6 +208,9 @@ class NodeAnswerOutput(NodeBase):
         answer = ""
         finish_reason = None
         soft_stop_reached = False
+        # ==================== AI修改 开始 ====================
+        res = None
+        # ==================== AI修改 结束 ====================
         try:
             #流式调用,返回生成器
             res = llm.stream(input = messages)
@@ -263,6 +266,19 @@ class NodeAnswerOutput(NodeBase):
                 put_data(task_id, "delta", {"delta": notice})
                 answer += notice
                 # ==================== AI修改 结束 ====================
+        finally:
+            # ==================== AI修改 开始 ====================
+            # break 只能停止本地 for 循环，不能保证 HTTP 流被远端关闭；
+            # 如果不主动 close，模型服务可能继续生成，直到消耗完 max_tokens。
+            # 正常结束、软停止和异常退出都统一释放底层流，避免答案无止境生成。
+            close_stream = getattr(res, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception as close_error:
+                    # 关闭失败不覆盖已经生成的答案，只留下可排查的日志。
+                    logger.warning(f"关闭答案生成流失败: {close_error}")
+            # ==================== AI修改 结束 ====================
         return answer
 
     # 组装历史对话字符串(三个分支共用)

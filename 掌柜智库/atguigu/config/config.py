@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -131,3 +132,18 @@ class McpConfig:
     # mcp连接地址
     mcp_server = os.getenv("MCP_SERVER")
     mcp_api_key = os.getenv("OPENAI_API_KEY")
+
+# ==================== AI修改 开始 ====================
+# 运行时临时目录统一放到项目目录之外，避免教育导入、测试或调试过程
+# 默认不在源码目录生成 temp_data、日志和中间文件；可通过环境变量覆盖默认位置。
+# ==================== AI修改 结束 ====================
+class RuntimeConfig:
+    RUNTIME_TEMP_ROOT = Path(os.getenv(
+        "KNOWLEDGE_RUNTIME_TEMP_ROOT",
+        str(Path(tempfile.gettempdir()) / "Knowledge_Database"),
+    ))
+
+
+def build_runtime_temp_path(task_id: str, date_label: str) -> Path:
+    """Build a dated task directory outside the project workspace."""
+    return RuntimeConfig.RUNTIME_TEMP_ROOT / "education_imports" / date_label / task_id

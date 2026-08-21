@@ -5,3 +5,20 @@ uv.lock
 test_env.py
 .idea
 models
+# Python 运行时生成的字节码和缓存目录
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 测试和开发工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.codex-*/
+.uv-cache-*/
+
+# 项目运行时生成的临时资料
+temp_data/
+
+# 异常生成的字面量系统目录，不属于项目文件
+%SystemDrive%/
