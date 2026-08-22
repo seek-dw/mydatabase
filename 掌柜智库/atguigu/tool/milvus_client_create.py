@@ -1,9 +1,39 @@
+import json
+
 from pymilvus import MilvusClient, AnnSearchRequest, WeightedRanker
 
 from atguigu.config.config import MilvusConfig
 from atguigu.tool.logger import logger
 
-milvus_client =None
+milvus_client = None
+
+# ==================== AI修改 开始 ====================
+# 正文检索和 HyDE 共用这组字段；schema 不同的旧集合再由筛选函数取交集。
+CHUNK_OUTPUT_FIELDS = (
+    "id", "title", "file_title", "content", "item_name",
+    "content_type", "source_name", "code", "q_type",
+    "course_name", "course_code", "chapter_name",
+    "course_category", "target_users", "learning_goals",
+    "project_name", "question_bank_name", "question_bank_code",
+    "question_code", "question_type", "source_path",
+)
+
+
+def build_item_name_expr(item_names):
+    """构造 Milvus 的主体过滤表达式，兼容字符串和名称列表。"""
+    if isinstance(item_names, str):
+        values = [item_names]
+    else:
+        values = [str(item) for item in (item_names or [])]
+    values = [
+        value.replace("\\", "\\\\").replace("'", "\\'")
+        for value in values
+        if value.strip()
+    ]
+    return f"item_name in {json.dumps(values, ensure_ascii=False)}" if values else None
+# ==================== AI修改 结束 ====================
+
+
 def get_milvus_client():
     global milvus_client
     if not milvus_client:

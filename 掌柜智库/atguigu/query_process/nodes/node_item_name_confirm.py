@@ -213,9 +213,12 @@ class NodeItemNameConfirm(NodeBase):
             self._llm = init_chat_model(
                 model=ModelConfig.LLM_MODEL_NAME,
                 model_provider="openai",
-                api_key=ModelConfig.MODA_API_KEY,
-                base_url=ModelConfig.VL_MODEL_BASE_URL,
-                temperature=ModelConfig.VL_MODEL_TEMPERATURE
+                # ==================== AI修改 开始 ====================
+                # 主体确认是文本调用，跟随当前平台切换语言模型地址和 key。
+                api_key=ModelConfig.LLM_API_KEY,
+                base_url=ModelConfig.LLM_BASE_URL,
+                # ==================== AI修改 结束 ====================
+                temperature=ModelConfig.MODEL_TEMPERATURE
             )
         llm = self._llm
         # ==================== AI修改 结束 ====================

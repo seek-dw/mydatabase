@@ -20,6 +20,14 @@
 # 注意: 原来的 query_service.py / import_service.py 仍保留可独立运行,
 #       但不要再和本服务同时启动(端口冲突/重复执行任务)。
 # ==================== AI修改 结束 ====================
+# ==================== AI修改 开始 ====================
+# 合并服务运行时不在项目目录生成 Python 字节码缓存，避免运行一次就污染工作区。
+# 启动命令仍建议同时设置 PYTHONDONTWRITEBYTECODE=1，以覆盖包入口最早期的导入阶段。
+# ==================== AI修改 结束 ====================
+import sys
+
+sys.dont_write_bytecode = True
+
 import asyncio
 import json
 import re
@@ -58,9 +66,24 @@ from atguigu.web.api.education_service import (
     list_questions,
     run_education_import,
 )
+from atguigu.web.api.knowledge_service import (
+    delete_directory_chunks,
+    delete_document_chunks,
+    delete_source_chunks,
+)
+# ==================== AI修改 开始 ====================
+from atguigu.tool.knowledge_chunk_store import (
+    build_local_source_identity,
+    build_upload_source_identity,
+)
+# ==================== AI修改 结束 ====================
 from atguigu.tool.task_utils import (
     get_data, create_queue, put_data, get_task_info,
     TASK_STATUS_PROCESSING, TASK_STATUS_COMPLETED, TASK_STATUS_FAILED,
+    # ==================== AI修改 开始 ====================
+    # 任务进入线程池后先标记 queued，避免排队期间 /status 返回空字符串。
+    TASK_STATUS_QUEUED,
+    # ==================== AI修改 结束 ====================
     update_task_status, add_running_task, add_done_task,
     # ==================== AI修改 开始 ====================
     # 导入 set_task_error: 导入失败时把异常摘要存进 task_info,
@@ -70,6 +93,30 @@ from atguigu.tool.task_utils import (
 )
 
 app = FastAPI(title="掌柜智库 · 一体化服务")
+
+
+# ==================== AI修改 开始 ====================
+# 统一知识表删除参数。删除操作按 document_id/source_type/source_path
+# 批量执行，不要求用户逐个寻找 chunk。
+class KnowledgeDirectoryDeleteParams(BaseModel):
+    source_path: str = Field(..., min_length=1, description="来源目录前缀")
+    source_type: str | None = Field(default=None, description="可选来源类型")
+
+
+@app.delete("/knowledge/documents/{document_id}")
+async def delete_knowledge_document(document_id: str):
+    return delete_document_chunks(document_id)
+
+
+@app.delete("/knowledge/sources/{source_type}")
+async def delete_knowledge_source(source_type: str, source_id: str | None = None):
+    return delete_source_chunks(source_type, source_id)
+
+
+@app.delete("/knowledge/directories")
+async def delete_knowledge_directory(body: KnowledgeDirectoryDeleteParams):
+    return delete_directory_chunks(body.source_path, body.source_type)
+# ==================== AI修改 结束 ====================
 
 app.add_middleware(
     CORSMiddleware,
@@ -333,14 +380,24 @@ async def stream(task_id: Annotated[str, PathParam(..., description="任务ID")]
 def run_graph(
         task_id: str,
         local_file_path: str,
-        local_dir: str
+        local_dir: str,
+        # ==================== AI修改 开始 ====================
+        # 这些字段来自原始来源，不能使用随机任务目录代替。
+        source_type: str = "document",
+        source_id: str = "local-upload",
+        source_path: str = "",
+        # ==================== AI修改 结束 ====================
 ):
     # main_graph中途若失败,则抛出异常被base接收,再被这里的try接收,返回前端上传失败状态
     try:
         init_state = {
             "task_id": task_id,
             "local_file_path": local_file_path,
-            "local_dir": local_dir
+            "local_dir": local_dir,
+            # 临时落盘路径只负责运行；文档身份必须由原始来源元数据决定。
+            "source_type": source_type,
+            "source_id": source_id,
+            "source_path": source_path,
         }
         # 更新总状态,执行main_graph之前总状态为process
         update_task_status(task_id, TASK_STATUS_PROCESSING)
@@ -395,6 +452,11 @@ async def upload_api(
             image_files.append(f)
     if main_doc is None:
         raise Exception("请至少上传一个 .md / .pdf / .docx 主文档")
+    # ==================== AI修改 开始 ====================
+    # 文件可能来自浏览器提交的路径字符串，落盘前只保留文件名，避免
+    # 临时任务目录或用户传入的路径片段进入文档身份和保存路径。
+    main_doc_name = Path(main_doc.filename or "upload.md").name
+    upload_source_id, upload_source_path = build_upload_source_identity(main_doc.filename)
     # ==================== AI修改 结束 ====================
 
     # 1.生成task_id
@@ -402,6 +464,10 @@ async def upload_api(
 
     # 加上节点流转状态监控,这是上传文件的起始位置,添加进字典列表
     add_running_task(task_id, "upload_file")
+    # ==================== AI修改 开始 ====================
+    # 先登记明确的排队状态；真正进入 run_graph 后才切换为 processing。
+    update_task_status(task_id, TASK_STATUS_QUEUED, {"message": "文件已上传，等待导入线程执行"})
+    # ==================== AI修改 结束 ====================
 
     # 2.接收文件并保存到指定位置 输出目录下加上时间目录
     # ==================== AI修改 开始 ====================
@@ -413,7 +479,7 @@ async def upload_api(
     task_dir_obj = Path(local_dir) / task_id
     task_dir_obj.mkdir(parents=True, exist_ok=True)
     local_dir = str(task_dir_obj)
-    local_file_path = str(task_dir_obj / main_doc.filename)
+    local_file_path = str(task_dir_obj / main_doc_name)
 
     # shutil.copyfileobj(file.file, f, 1024*1021) 按缓冲区写入,比一次性read更合适
     # 3.文件流写入指定路径
@@ -445,7 +511,15 @@ async def upload_api(
     # 添加节点状态流转监控:这里文件上传结束,将其加入done字典列表,并从running字典列表中删除
     add_done_task(task_id, "upload_file")
     # 文件保存和备份成功,接下来开启后台任务,调用graph,进行存库一系列操作
-    bg_task.add_task(run_graph, task_id, local_file_path, local_dir)
+    bg_task.add_task(
+        run_graph,
+        task_id,
+        local_file_path,
+        local_dir,
+        "document",
+        upload_source_id,
+        upload_source_path,
+    )
 
     return {"task_id": task_id}
 
@@ -541,6 +615,11 @@ async def import_local(
     if not docs:
         raise HTTPException(status_code=400, detail=f"该目录下没有找到 .md / .pdf / .docx 文档")
 
+    # ==================== AI修改 开始 ====================
+    # 记录原始来源目录。后续任务目录带随机 task_id，但它不能参与文档身份。
+    source_root = root.resolve()
+    # ==================== AI修改 结束 ====================
+
     output_root = Path(fr"E:\AI大模型\第七阶段 掌柜智库\资料\05-设备手册汇总\output\{datetime.now().strftime('%Y-%m-%d')}")
     date_str = datetime.now().strftime('%Y-%m-%d')
     minio_client = create_minio_client()
@@ -553,6 +632,10 @@ async def import_local(
 
         # 主文档拷贝到任务目录(与 /upload 的落盘结构完全一致)
         local_file_path = str(task_dir / doc.name)
+        # ==================== AI修改 开始 ====================
+        # 文档身份使用原始目录和相对路径；task_dir 只用于本次运行的临时文件。
+        source_id, source_path = build_local_source_identity(source_root, doc)
+        # ==================== AI修改 结束 ====================
         shutil.copy2(doc, local_file_path)
 
         # md: 解析引用的图片名, 从全目录索引里找到源文件, 拷到同级 images/
@@ -578,6 +661,10 @@ async def import_local(
 
         # 以下与 /upload 完全一致: minio备份 + 节点监控 + 后台graph
         add_running_task(task_id, "upload_file")
+        # ==================== AI修改 开始 ====================
+        # 本地批量导入使用线程池，线程未空闲前任务处于 queued，不再返回空状态。
+        update_task_status(task_id, TASK_STATUS_QUEUED, {"message": "已提交，等待导入线程执行"})
+        # ==================== AI修改 结束 ====================
         minio_client.fput_object(
             bucket_name=MinioConfig.MINIO_BUCKET_NAME,
             object_name=f"back_up/{date_str}/{task_id}/{doc.name}",
@@ -596,7 +683,16 @@ async def import_local(
         # 保留 Future 强引用到 _pending_futures, 防止极端 GC 场景取消任务。
         # ==================== AI修改 结束 ====================
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(_import_pool, run_graph, task_id, local_file_path, str(task_dir))
+        fut = loop.run_in_executor(
+            _import_pool,
+            run_graph,
+            task_id,
+            local_file_path,
+            str(task_dir),
+            "document",
+            source_id,
+            source_path,
+        )
         _pending_futures.add(fut)
         fut.add_done_callback(_pending_futures.discard)
         # ==================== AI修改 结束 ====================

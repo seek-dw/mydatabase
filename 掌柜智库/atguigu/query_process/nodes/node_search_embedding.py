@@ -1,6 +1,4 @@
 # atguigu/query_process/nodes/node_search_embedding.py
-import json
-
 from atguigu.config.config import MilvusConfig
 from atguigu.query_process.base import NodeBase
 from atguigu.query_process.state import QueryGraphState
@@ -8,6 +6,10 @@ from atguigu.tool.bgem3_create_tool import vectorize_texts
 from atguigu.tool.convert_to_json import convert_to_json
 from atguigu.tool.logger import logger
 from atguigu.tool.milvus_client_create import (
+    # ==================== AI修改 开始 ====================
+    CHUNK_OUTPUT_FIELDS,
+    build_item_name_expr,
+    # ==================== AI修改 结束 ====================
     create_reqs,
     get_milvus_client,
     my_hybrid_search,
@@ -63,21 +65,15 @@ class NodeSearchEmbedding(NodeBase):
         # 拿到要检索的表名
         # ==================== AI修改 开始 ====================
         # 课程/题目走教育专用表，普通文档继续走原表；两张表互不污染 schema。
+        collection_name = MilvusConfig.milvus_chunks_collection
         # ==================== AI修改 结束 ====================
-        collection_name = (
-            MilvusConfig.education_chunks_collection
-            if query_type in ("course", "question")
-            else MilvusConfig.milvus_chunks_collection
-        )
 
         # ==================== AI修改 开始 ====================
         # 教育资料尚未成功导入时，返回空召回让后续节点走友好兜底，
         # 不再把“表不存在”变成整条问答任务的Milvus异常。
-        if query_type in ("course", "question") and not education_collection_is_available(
-            get_milvus_client(), collection_name
-        ):
+        if not education_collection_is_available(get_milvus_client(), collection_name):
             logger.warning(
-                f"教育知识库尚未创建: {collection_name}，请先完成教育资料导入"
+                f"知识切片集合尚未创建: {collection_name}，请先完成资料导入"
             )
             return {"embedding_chunks": []}
         # ==================== AI修改 结束 ====================
@@ -96,11 +92,9 @@ class NodeSearchEmbedding(NodeBase):
         # (查特定产品文档时, item_name精确匹配是必要的)。
         expr_conditions = []
         if query_type in ("doc", "knowledge") and item_names:
-            item_names = [
-                item.replace("\\", "\\\\").replace("'", "\'").replace('"', "\"")
-                for item in item_names
-            ]
-            expr_conditions.append(f"item_name in {json.dumps(item_names)}")
+            item_expr = build_item_name_expr(item_names)
+            if item_expr:
+                expr_conditions.append(item_expr)
         if query_type == "course":
             expr_conditions.append("content_type == 'course_intro'")
         elif query_type == "question":
@@ -124,16 +118,11 @@ class NodeSearchEmbedding(NodeBase):
             # ==================== AI修改 结束 ====================
         )
 
+        # ==================== AI修改 开始 ====================
         output_fields = select_existing_output_fields(
-            get_milvus_client(), collection_name, [
-                "id", "title", "file_title", "content", "item_name",
-                "content_type", "source_name", "code", "q_type",
-                "course_name", "course_code", "chapter_name",
-                "course_category", "target_users", "learning_goals",
-                "project_name", "question_bank_name", "question_bank_code",
-                "question_code", "question_type", "source_path",
-            ]
+            get_milvus_client(), collection_name, CHUNK_OUTPUT_FIELDS
         )
+        # ==================== AI修改 结束 ====================
         res = my_hybrid_search(
             collection_name=collection_name,
             reqs=reqs,

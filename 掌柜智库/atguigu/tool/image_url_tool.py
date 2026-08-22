@@ -49,11 +49,13 @@ def _endpoint_base(endpoint: str) -> str:
 def build_minio_image_url(endpoint: str, bucket: str, object_name: str) -> str:
     """根据 MinIO endpoint、bucket 和对象名生成浏览器访问 URL。"""
     object_parts = [
+        # quote 对url中的特殊字符进行百分号编码,核心作用就是将一些危险的字符(空格,中文,斜杠,问号)转化为%xx格式,确保被当做普通数据处理
+        # "safe= "所有非字幕数字字符都将被编码
         quote(part, safe="")
         for part in str(object_name or "").strip("/").split("/")
         if part
     ]
-    object_path = "/".join(object_parts)
+    object_path = "/".join(object_parts) #object_name拆分全部quote安全性处理后重新合并
     bucket_path = quote(str(bucket or "").strip("/"), safe="")
     return f"{_endpoint_base(endpoint)}/{bucket_path}/{object_path}"
 

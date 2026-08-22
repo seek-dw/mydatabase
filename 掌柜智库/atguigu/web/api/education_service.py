@@ -166,7 +166,9 @@ def _query_education_chunks(content_type: str, limit: int = 100) -> list[dict[st
     """读取教育 collection 的结构化记录；服务未启动时返回空列表。"""
     try:
         client = get_milvus_client()
-        collection = MilvusConfig.education_chunks_collection
+        # ==================== AI修改 开始 ====================
+        collection = MilvusConfig.milvus_chunks_collection
+        # ==================== AI修改 结束 ====================
         if not client.has_collection(collection_name=collection):
             return []
         ensure_collection_loaded(collection)

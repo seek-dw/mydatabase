@@ -12,8 +12,8 @@
 #   真正导入(去掉--dry-run,预计十几分钟):
 #     python -m atguigu.edu_process.edu_import --course 课程介绍.md --question 题目资料.md
 #
-# 【注意】chunks库schema已新增教育元数据字段,旧collection不兼容,
-#         执行前请先在.env中把CHUNKS_COLLECTION改为新名称(或drop旧collection)
+# 【注意】正文 chunks 统一写入 knowledge_chunks；如果旧表仍是历史 schema，
+#         请先删除旧普通/教育 chunks collection，再重新导入全部资料。
 # ==================== AI修改 结束 ====================
 import argparse
 
@@ -25,9 +25,9 @@ from atguigu.edu_process.edu_parsers import (
     parse_course_md,
     parse_question_md,
 )
-# 关键复用: chunks入库直接调用通用管线的入库节点
-# (建表/幂等删除/字段截断兜底/教育元数据字段全在它里面,和前端导入完全同一条路)
-from atguigu.import_process.nodes.node_import_milvus import NodeImportMilvus
+# 关键复用: chunks入库直接调用统一知识存储模块
+# (建表/按document_id替换/字段校验/批量插入和前端导入使用同一条路)
+from atguigu.tool.knowledge_chunk_store import KnowledgeChunkStore, build_document_id
 from atguigu.tool.bgem3_create_tool import vectorize_texts
 from atguigu.tool.logger import logger
 from atguigu.tool.milvus_client_create import get_milvus_client, ensure_collection_loaded
@@ -174,29 +174,32 @@ def register_item_names(item_names, file_title):
     logger.info(f"item主体库注册完成,共{len(item_names)}个主体")
 
 
-def import_chunks(chunks, file_title):
+def import_chunks(chunks, file_title, source_path=None, source_id=None):
     """
-    chunks入库——直接复用通用管线的NodeImportMilvus节点。
+    教育 chunk 直接调用统一知识存储模块。
 
-    【为什么不自己写insert】这个节点里封装了:
-      建表(含教育元数据字段) / 按file_title幂等删除旧数据 /
-      VARCHAR字段超长截断兜底 / 批量插入
-    复用它 = 教育数据和前端上传的文档走完全相同的入库路径,
-    字段处理逻辑只有一份,以后改schema不用改两个地方。
-    (节点本身是个可调用对象,传state字典进去即可,不依赖LangGraph运行)
+    教育来源和普通文档使用同一张 knowledge_chunks 表，课程/题目差异
+    只保留在 content_type 和 source_type 元数据中。
     """
-    # file_title是幂等删除的依据,同类数据统一挂同一个file_title,
-    # 重导时旧数据被整体清掉,不会新旧混杂
-    for chunk in chunks:
-        chunk["file_title"] = file_title
     # ==================== AI修改 开始 ====================
-    # 教育数据写入独立 collection，首次运行自动按教育 schema 建表，
-    # 不会因为原 chunks_db 是旧字段结构而导入失败。
+    source_path = str(source_path or file_title)
+    source_id = str(source_id or file_title)
+    document_id = build_document_id("education", source_id, source_path)
+    KnowledgeChunkStore(
+        collection_name=MilvusConfig.milvus_chunks_collection,
+    ).replace_document(
+        document_id=document_id,
+        chunks=chunks,
+        metadata={
+            "document_id": document_id,
+            "source_type": "education",
+            "source_id": source_id,
+            "source_path": source_path,
+            "source_name": file_title,
+            "file_title": file_title,
+        },
+    )
     # ==================== AI修改 结束 ====================
-    NodeImportMilvus()({
-        "chunks": chunks,
-        "collection_name": MilvusConfig.education_chunks_collection,
-    })
     logger.info(f"{file_title}导入完成,共{len(chunks)}条chunk")
 
 
@@ -235,8 +238,8 @@ def main():
 
     # ---- 第4步: chunks入库(分两次调,课程/题目各自挂独立的file_title,
     #      这样"课程介绍"或"题目资料"可以单独重导而互不影响) ----
-    import_chunks(course_chunks, "课程介绍")
-    import_chunks(question_chunks, "题目资料")
+    import_chunks(course_chunks, "课程介绍", args.course, "course")
+    import_chunks(question_chunks, "题目资料", args.question, "question")
 
     logger.info(f"教育数据全部导入完成: 主体{len(item_names)}个, chunk {total}条")
 

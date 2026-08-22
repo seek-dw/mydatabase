@@ -1,5 +1,8 @@
 # atguigu/import_process/nodes/node_item_name_recognition.py
 import json
+# ==================== AI修改 开始 ====================
+import re
+# ==================== AI修改 结束 ====================
 
 from langchain.chat_models import init_chat_model
 from pymilvus import DataType
@@ -27,8 +30,80 @@ class NodeItemNameRecognition(NodeBase):
 
     """
 
-    name = "node_item_name_recognition"
+    # ==================== AI修改 开始 ====================
+    # 主体识别的输入和输出都先经过纯函数处理，避免模型一次不稳定的返回
+    # 直接污染所有 chunk 或破坏 Milvus 过滤表达式。使用静态方法是因为
+    # 这些函数不依赖节点实例状态，但仍属于主体识别节点的内部契约。
+    _ITEM_NAME_PREFIX_RE = re.compile(
+        r"^(?:主体名称|核心主体|商品名称|名称|item[_ -]?name)\s*[:：]\s*",
+        re.IGNORECASE,
+    )
+    _UNKNOWN_ITEM_NAMES = {"不确定", "无法确定", "无法识别", "未知", "unknown", "none", "null"}
 
+    @staticmethod
+    def build_item_name_evidence(chunks, file_title: str, max_chars: int = 12000) -> str:
+        """Build bounded evidence from document metadata, headings, and representative chunks."""
+        parts = [f"文件名：{file_title}"]
+        seen_titles = set()
+        titles = []
+        for chunk in chunks or []:
+            title = str(chunk.get("title") or "").strip()
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                titles.append(title)
+        if titles:
+            parts.append("章节标题索引：\n" + "\n".join(f"- {title}" for title in titles))
+
+        total = len(chunks or [])
+        if total:
+            indexes = [0, 1, 2, total // 4, total // 2, (total * 3) // 4, total - 3, total - 2, total - 1]
+            selected_indexes = list(dict.fromkeys(index for index in indexes if 0 <= index < total))
+            for index in selected_indexes:
+                chunk = chunks[index]
+                title = str(chunk.get("title") or "").strip()
+                content = str(chunk.get("content") or "").strip()
+                parts.append(f"片段 {index + 1}\n标题：{title}\n正文：{content}")
+
+        evidence = ""
+        for part in parts:
+            if len(evidence) >= max_chars:
+                break
+            separator = "\n\n" if evidence else ""
+            remaining = max_chars - len(evidence) - len(separator)
+            if remaining <= 0:
+                break
+            evidence += separator + part[:remaining]
+        return evidence
+
+    @staticmethod
+    def _compact_item_name_text(value: str) -> str:
+        return re.sub(r"\s+", "", value).casefold()
+
+    @staticmethod
+    def normalize_item_name(raw_item_name, fallback: str, evidence: str, max_length: int = 100) -> str:
+        """Normalize model output and reject names unsupported by the supplied document evidence."""
+        fallback_text = re.sub(r"\s+", " ", str(fallback or "").strip())[:max_length].rstrip()
+        if isinstance(raw_item_name, (list, tuple)):
+            raw_item_name = next((item for item in raw_item_name if item), "")
+        text = str(raw_item_name or "").strip()
+        text = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        text = NodeItemNameRecognition._ITEM_NAME_PREFIX_RE.sub("", text).strip()
+        text = text.strip("`\"'“”‘’ ")
+        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"[。！？；;]+$", "", text).strip()
+        if not text or text.casefold() in NodeItemNameRecognition._UNKNOWN_ITEM_NAMES:
+            return fallback_text
+        if NodeItemNameRecognition._compact_item_name_text(text) not in NodeItemNameRecognition._compact_item_name_text(str(evidence or "")):
+            return fallback_text
+        return text[:max_length].rstrip()
+
+    @staticmethod
+    def escape_milvus_string(value: str) -> str:
+        """Escape a value embedded in a Milvus string filter expression."""
+        return str(value).replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+    # ==================== AI修改 结束 ====================
+
+    name = "node_item_name_recognition"
     def process(self, state: ImportGraphState):
 
         # 1.获取chunks
@@ -42,52 +117,41 @@ class NodeItemNameRecognition(NodeBase):
             raise Exception("file_title is empty")
 
 
-        # 2.对chunks进行自定义切片,拿到最有可能包含主体信息的chunks
-        # 3.将切分后的chunks拼接成一个新的大chunks字符串
-        chunks_part_list = chunks[:3]+chunks[len(chunks)//2: len(chunks)//2 + 3]+chunks[-3:]
-        max_len = 100000
-        content_str = '\n'
-        for idx , chunk in enumerate(chunks_part_list,start = 1):
-            title = chunk.get("title")
-            content = chunk.get("content")
-            chunk_str = f"{idx}\n{file_title}\n{title}\n{content}\n"
-            if len(content_str) > max_len:
-                logger.info("超过最大长度,不在拼接")
-                break
-            content_str+=chunk_str
-        content_str = content_str[:max_len]
+        # ==================== AI修改 开始 ====================
+        # 2-3.同时提供章节标题索引和分布式正文证据；标题能覆盖主体只出现于
+        # 中间章节的文档，固定上限避免长文档撑爆模型上下文。
+        content_str = self.build_item_name_evidence(chunks, file_title)
+        # ==================== AI修改 结束 ====================
 
         # 4.将大的字符串chunks交给大模型并设置提示词让其识别其主体名称
 
-        llm = init_chat_model(
-            model = ModelConfig.LLM_MODEL_NAME,
-            model_provider = "openai",
-            api_key = ModelConfig.MODA_API_KEY,
-            base_url = ModelConfig.VL_MODEL_BASE_URL,
-            temperature = ModelConfig.VL_MODEL_TEMPERATURE
-        )
-
-        messages = [
-            {"role":"system","content":ITEM_NAME_SYSTEM_PROMPT},
-            {"role":"user","content":ITEM_NAME_USER_PROMPT_TEMPLATE.format(file_title=file_title,context=content_str)}
-        ]
-        res = llm.invoke(input = messages)
-        print(res.content)
-        #拿取主体名称
-        item_name = res.content
-        #清洗llm输出的字符串文本,防止同一个主体文本在milvus中产生多个记录,这方法会误伤正常输出空格
-        item_name = item_name.replace(" ","").replace("\n","").replace("\t","")
-
-        if not item_name:
-            item_name = file_title
-
         # ==================== AI修改 开始 ====================
-        # item_name超长兜底:items表和chunks表的item_name字段max_length=100,
-        # LLM偶发输出超长主体名(如把整句话当主体名)会导致Milvus插入直接报错,
-        # 整个文档导入失败。查询侧和导入侧用的是同一个截断值,匹配一致性不受影响
-        if len(item_name) > 100:
-            logger.info(f"item_name超过100字符({len(item_name)}),已截断")
-            item_name = item_name[:100]
+        # 模型调用失败时使用文件标题继续导入；单个文档的识别服务波动不应
+        # 阻断整个导入任务。规范化同时保留名称内部空格并验证正文证据。
+        try:
+            llm = init_chat_model(
+                model=ModelConfig.LLM_MODEL_NAME,
+                model_provider="openai",
+                # ==================== AI修改 开始 ====================
+                # 主体识别是文本调用，使用当前平台的语言模型地址和 key。
+                api_key=ModelConfig.LLM_API_KEY,
+                base_url=ModelConfig.LLM_BASE_URL,
+                # ==================== AI修改 结束 ====================
+                temperature=ModelConfig.MODEL_TEMPERATURE,
+            )
+            messages = [
+                {"role": "system", "content": ITEM_NAME_SYSTEM_PROMPT},
+                {"role": "user", "content": ITEM_NAME_USER_PROMPT_TEMPLATE.format(
+                    file_title=file_title,
+                    context=content_str,
+                )},
+            ]
+            response = llm.invoke(input=messages)
+            raw_item_name = getattr(response, "content", "")
+        except Exception as exc:
+            logger.error(f"主体识别模型调用失败，回退到文件名: {exc}")
+            raw_item_name = ""
+        item_name = self.normalize_item_name(raw_item_name, file_title, content_str)
         # ==================== AI修改 结束 ====================
 
         #创建milvus客户端
@@ -156,36 +220,25 @@ class NodeItemNameRecognition(NodeBase):
             )
 
 
-        #插入数据之前先幂等性删除数据
-        #由于过滤的条件是item_name是由大模型生成出来的不稳定因素,所以为了保证该字段被删除,需要对其内容做一个防止语法破坏的操作
-        safe_item_name = item_name.replace("\\","\\\\").replace("'","\\").replace('"',"\\")
-
-        #类似sql语句Delete * from collection_name where filter (item_name == xxxx)
         # ==================== AI修改 开始 ====================
-        # 删除前确保表已load进内存: 新建的items表/Milvus重启后的表处于
-        # not loaded状态,直接delete会报
-        # MilvusException(code=101, message=collection not loaded)
-        ensure_collection_loaded(collection_name)
-        # ==================== AI修改 结束 ====================
-        milvus_client.delete(collection_name,filter = (f"item_name == '{safe_item_name}'") )
-
-        #幂等性删除完成后准备插入数据
-        #将item_name通过嵌入式模型进行向量化
+        # 先完成向量化和字段校验，再删除旧记录。这样模型或 embedding 失败时
+        # 不会先把已有主体记录删掉；过滤值统一转义，避免特殊名称破坏表达式。
         item_name_vector = vectorize_texts([item_name])
-
-        #准备插入数据
+        dense_vectors = item_name_vector.get("dense") or []
+        sparse_vectors = item_name_vector.get("sparse") or []
+        if not dense_vectors or not sparse_vectors:
+            raise ValueError("主体名称向量化结果为空")
         data = {
-            "item_name":item_name,
-            "file_title":file_title,
-            "dense_vector":item_name_vector.get("dense")[0],
-            "sparse_vector":item_name_vector.get("sparse")[0]
+            "item_name": item_name,
+            "file_title": file_title,
+            "dense_vector": dense_vectors[0],
+            "sparse_vector": sparse_vectors[0],
         }
-
-        #插入数据
-        milvus_client.insert(
-            collection_name = collection_name,
-            data = data
-        )
+        safe_item_name = self.escape_milvus_string(item_name)
+        ensure_collection_loaded(collection_name)
+        milvus_client.delete(collection_name, filter=f"item_name == '{safe_item_name}'")
+        milvus_client.insert(collection_name=collection_name, data=data)
+        # ==================== AI修改 结束 ====================
 
         #
         for chunk in chunks:

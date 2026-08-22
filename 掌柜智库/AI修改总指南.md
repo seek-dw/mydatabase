@@ -62,6 +62,34 @@ BGE-M3 生成向量
 | 只看到“失败”，不知道为什么 | 后端保存错误摘要并透传前端 | 导入卡片里能直接看到具体报错 |
 | 查询速度很慢 | web_search 开关化、HyDE 缓存、重排序失败降级 | 默认查询链路更短，网络搜索不再拖慢每次回答 |
 
+<!-- ==================== AI修改 开始 ==================== -->
+### 主体识别节点优化（2026-08-21）
+
+本轮优化针对普通资料导入链路中的 `node_item_name_recognition`，保持“一份文档识别一个核心主体”的数据模型不变，重点提高长文档和模型波动时的稳定性。
+
+涉及文件：
+
+- `atguigu/import_process/nodes/node_item_name_recognition.py`
+- `atguigu/config/prompt.py`
+- `tests/test_item_name_recognition.py`
+
+主要变化：
+
+1. 主体识别输入不再只取固定的前、中、后 9 个正文片段，而是同时建立章节标题索引，再补充文档前部、四分位、中部和尾部的代表性正文证据。
+2. 证据总长度限制为 12000 字符，避免长文档把主体识别模型的上下文撑得过大。
+3. 提示词不再把所有资料都称为“商品名称与型号”，现在允许课程、题库、设备、软件、系统、项目、技术、标准、模型和算法等主体类型。
+4. 模型输出会去掉“主体名称：”等前缀和包裹符号，但保留 `Python 3.12`、`Windows Server 2022` 等名称内部的有效空格。
+5. 如果模型输出的名称无法在文件名、章节标题或正文证据中找到，程序回退到文件名，避免把模型自行编造的概括写进主体库。
+6. 模型调用失败、返回空值或返回不确定词语时，使用文件名作为保守兜底，不让一次外部模型波动直接阻断文档导入。
+7. 主体向量化和结果校验完成后才执行旧主体记录清理，并统一转义 Milvus 字符串过滤条件，减少导入失败时的旧数据丢失和特殊字符解析问题。
+
+维护注意：主体名称和主体向量发生变化后，已经导入的旧 chunk 不会自动更新。修改此节点后，建议重新导入受影响的资料；如果需要保留旧数据，优先使用新的 Milvus 集合名进行验证。
+
+测试文件中的主体识别测试不访问真实 LLM、Milvus 或 embedding 服务，只验证证据采样、名称规范化、错误回退和过滤表达式转义等稳定契约。
+
+本轮验证结果：`tests/test_item_name_recognition.py` 共 4 项测试通过，主体识别相关文件语法检查通过。现有 `tests/test_education_features.py` 为 20 项通过、1 项失败；失败原因是原有的 `get_answer_scope_instruction` 尚未在答案节点提供，本轮没有修改答案生成逻辑。
+<!-- ==================== AI修改 结束 ==================== -->
+
 ---
 
 ## 三、配置和模型：项目使用哪些“记忆”和“能力”
@@ -73,7 +101,7 @@ BGE-M3 生成向量
 
 ### 1. 生成答案的模型
 
-项目已经把答案生成、主体识别、HyDE 等调用集中到配置中。当前主要使用魔搭/阿里云相关模型配置；图片摘要使用视觉模型；向量检索使用本地 BGE-M3；重排序仍然是单独的重排序服务。
+项目已经把答案生成、主体识别、HyDE 等调用集中到配置中。语言模型和视觉模型可以通过 `MODEL_PROVIDER` 在魔搭与 OpenRouter 之间切换；图片摘要使用视觉模型；向量检索使用本地 BGE-M3；重排序仍然是单独的 OpenRouter 链路，不参加本次平台切换。
 
 这里要特别区分四类模型：
 
@@ -82,7 +110,48 @@ BGE-M3 生成向量
 - **向量模型 BGE-M3**：把问题和资料变成向量，用来找相似内容。
 - **重排序模型**：对初步召回结果重新排序，提高前几条结果的准确性。
 
-所以，“除了重排序都换成魔搭”并不代表每一个环节都会走同一个接口。BGE-M3 是本地模型，重排序是独立链路，答案模型和视觉模型又是另外的调用。
+所以，BGE-M3 是本地模型，重排序是独立链路；答案模型、主体识别、HyDE、主体确认统一走当前 `MODEL_PROVIDER` 的语言模型配置，图片摘要走当前平台的视觉模型配置。
+
+### 2.1 魔搭/OpenRouter 一键切换
+
+`.env` 中只改这一项即可切换语言模型和视觉模型：
+
+```dotenv
+MODEL_PROVIDER=modelscope
+```
+
+或：
+
+```dotenv
+MODEL_PROVIDER=openrouter
+```
+
+魔搭模式读取：
+
+```dotenv
+MODELSCOPE_API_KEY=...
+MODELSCOPE_BASE_URL=https://api-inference.modelscope.cn/v1
+MODELSCOPE_LLM_MODEL=Qwen/Qwen3.8-27B
+MODELSCOPE_VL_MODEL=Qwen/Qwen3-VL-8B-Instruct
+```
+
+OpenRouter 模式读取：
+
+```dotenv
+OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_LLM_MODEL=dots-studio/dots-3-note-preview:free
+OPENROUTER_VL_MODEL=dots-studio/dots-3-note-preview:free
+```
+
+当前按用户要求，OpenRouter 的语言模型和视觉模型默认都使用 `dots-studio/dots-3-note-preview:free`。如果平台后续调整该模型的图片输入能力，只需要单独修改 `OPENROUTER_VL_MODEL`，语言模型不受影响。
+
+切换后必须重启后端，因为模型配置和 LangChain 客户端在进程启动/首次调用时读取并缓存。重排序仍只读取 `OPENROUTER_API_KEY`，不受 `MODEL_PROVIDER` 影响。
+
+<!-- ==================== AI修改 开始 ====================
+     余额耗尽和临时限流必须分开处理，避免无效指数退避。
+     ==================== AI修改 结束 ==================== -->
+如果模型接口返回 `insufficient balance`、`insufficient_quota`、`quota exceeded`、`余额不足` 或 `额度不足`，这类错误不会进入指数退避，因为等待不会补充额度；只有 `Too Many Requests`、RPM、TPM 等临时频率限制才会等待后重试。
 
 ### 2. 上下文和输出长度配置
 
@@ -365,6 +434,7 @@ python -m atguigu.edu_process.edu_import \
 - `atguigu/tool/image_url_tool.py`
 - `atguigu/web/api/app_service.py`
 - `atguigu/web/page/index.html`
+- `atguigu/web/page/import.html`
 
 图片显示必须经过四步，少一步都可能只显示文字：
 
@@ -522,8 +592,18 @@ MongoDB 中增加了会话摘要集合 `chat_summary`：
 
 ```text
 cd /d D:\PythonProject\Knowledge_Database\掌柜智库
+set PYTHONDONTWRITEBYTECODE=1
 python -m atguigu.web.api.app_service
 ```
+
+Windows PowerShell 使用：
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE = "1"
+python -m atguigu.web.api.app_service
+```
+
+服务入口内部也会关闭字节码落盘；启动命令设置环境变量是为了覆盖包入口最早期的导入阶段，确保 `.pyc` 和 `__pycache__` 不写入项目目录。
 
 浏览器访问：
 
@@ -640,6 +720,44 @@ Process finished with exit code -1073741819 (0xC0000005)
 3. 前端失败卡片自动展开日志，直接显示错误摘要。
 
 另外，后台 Future 会被集合持有，任务完成后再移除，避免极端情况下任务刚提交就失去引用；状态查询使用运行中的事件循环，兼容性更好。
+
+<!-- ==================== AI修改 开始 ====================
+     限流等待状态必须由后端明确表达，不能由前端根据空字符串猜测。
+     ==================== AI修改 结束 ==================== -->
+### 11.1 导入限流等待状态
+
+图片摘要调用触发模型限流时，后端任务不会失败，而是按下面的状态流转：
+
+```text
+queued -> processing -> waiting_response -> processing -> completed
+                                      \-> waiting_response (再次限流)
+                                      \-> failed (超过重试上限)
+```
+
+`/status/{task_id}` 在等待期间返回：
+
+```json
+{
+  "status": "waiting_response",
+  "status_detail": {
+    "message": "触发模型限流，30秒后自动重试",
+    "retry_count": 1,
+    "retry_after": 30
+  }
+}
+```
+
+首页和独立导入页收到 `waiting_response` 后显示“等待响应中”，并展示重试次数与预计等待时间。退避结束、下一次模型请求开始前，后端会恢复 `processing`，前端随之恢复“处理中”。重试次数耗尽后才返回 `failed`，并沿用原有错误详情展示。
+
+任务提交到线程池后会先写入 `queued`，避免线程池排队期间 `/status` 返回空字符串。空字符串不再作为正常的限流、排队或处理中状态；真正部署多进程时仍需使用共享任务状态存储，因为当前任务字典仍是单进程内存。
+
+本次涉及：
+
+- `atguigu/tool/task_utils.py`：增加 `queued`、`waiting_response` 和结构化 `status_detail`。
+- `atguigu/import_process/nodes/node_md_img.py`：退避前写入等待状态，退避后恢复处理状态。
+- `atguigu/web/api/app_service.py`：上传任务和本地批量导入任务登记 `queued`。
+- `atguigu/web/page/index.html`、`atguigu/web/page/import.html`：展示等待、排队和恢复处理状态。
+- `tests/test_task_status.py`：覆盖状态详情、两个页面展示和图片重试接入。
 
 如果状态永远是“排队中”或“主体识别”，优先按这个顺序处理：
 
@@ -841,7 +959,7 @@ HTML/JavaScript 中使用对应的 HTML 注释：
 
 ## 十七、后续建议：Obsidian 接入应该怎么做
 
-把 Obsidian 笔记作为知识库是可行的，但建议单独做一个“Obsidian 导入适配层”，不要直接把整个 Vault 原样扔进普通导入流程。
+Obsidian 建议单独做“来源适配层”，但不再单独创建一张向量表。所有正文切片统一写入 `knowledge_chunks`，通过 `source_type=obsidian`、`source_id=Vault标识` 和稳定的 `source_path` 区分来源。
 
 推荐架构：
 
@@ -850,28 +968,138 @@ Obsidian Vault
   ↓
 扫描 Inbox / 指定目录
   ↓
-解析 frontmatter、标签、wikilink、图片 wikilink
-  ↓
-建立笔记标题、路径、MOC、关联笔记元数据
+解析 frontmatter、标签和文件路径
   ↓
 按笔记标题和小标题切分
   ↓
-写入独立的 obsidian chunks 集合
+写入统一 knowledge_chunks
 ```
 
 这样做的好处：
 
-- 不会把课程资料、项目资料和个人笔记混成一张表。
-- 可以按路径、标签、MOC 和笔记标题过滤。
-- 以后笔记修改时可以按文件 hash 增量更新，不必全部重导。
-- 可以专门处理 `[[笔记链接]]` 和 `![[图片]]`。
-- 图片引用可以映射到 Obsidian 附件目录，再上传 MinIO。
-
-当前代码已经支持普通 Markdown 和 HTML 图片，但 Obsidian WikiLink 图片、增量同步、删除同步和链接关系还应该作为下一阶段单独实现。
+- 不会随着 Vault 和知识来源增加而不断创建 Collection。
+- 可以按 `source_type`、`source_id` 和 `source_path` 过滤。
+- 后续新增网页、Git、数据库等来源时，核心查询和删除逻辑不需要重写。
+- Obsidian 的 `[[笔记链接]]` 第一阶段保留在正文中，不自动扩展到答案上下文，保证回答优先使用直接证据。
+- 图片引用、增量同步和链接关系属于后续可选能力，不作为精确问答的必需链路。
 
 ---
 
-## 十八、一句话总结
+## 十八、统一知识切片表与批量删除
+
+当前正文知识统一使用一张 Milvus Collection：
+
+```text
+knowledge_chunks
+```
+
+主体识别仍使用独立的 `item_collection`，因为它和正文向量检索是两种不同用途。普通资料、教育资料和未来 Obsidian 资料都写入 `knowledge_chunks`。
+
+每个 chunk 必须携带：
+
+```text
+document_id
+source_type
+source_id
+source_path
+file_hash
+```
+
+同一篇原始文档的所有 chunk 共用同一个 `document_id`。更新或删除文档时，按 `document_id` 一次删除全部切片，不再按 `file_title` 查找。
+
+当前实现提供三类批量删除接口：
+
+```text
+DELETE /knowledge/documents/{document_id}
+DELETE /knowledge/sources/{source_type}?source_id=...
+DELETE /knowledge/directories
+```
+
+本次重构不保留旧普通/教育 Collection 的运行时兼容逻辑。由于原始资料可以重新导入，首次切换时直接删除旧 chunks Collection，使用新 schema 重新导入即可，不需要一次性迁移脚本。删除的是 Milvus 中的向量数据，不是原始资料文件。
+
+本轮实际改动：
+
+- `atguigu/tool/knowledge_chunk_store.py`：新增统一 schema、按 `document_id` 替换文档和按来源/目录批量删除。
+- `atguigu/import_process/nodes/node_import_milvus.py`：从约 300 行的兼容型节点收缩为薄适配层。
+- `atguigu/edu_process/edu_import.py`：教育导入直接复用统一知识存储模块，不再切换教育专用 chunks 表。
+- `atguigu/web/api/app_service.py`：增加文档、来源和目录删除接口。
+- `tests/test_knowledge_chunk_store.py`、`tests/test_import_metadata.py`：覆盖统一字段、稳定文档 ID、替换写入和批量删除条件。
+
+验证结果：本轮相关测试 `17 passed`；全量测试 `39 passed, 1 failed`。唯一失败是既有的 `get_answer_scope_instruction` 未在答案输出节点提供，位于 `tests/test_education_features.py`，与本次统一知识表重构无关。编译全包时还发现既有的 `atguigu/query_process/nodes2/node_rerank.py` 存在缩进错误，本轮未修改该历史文件。
+
+---
+
+## 十九、重复导入的稳定文档身份
+
+<!-- ==================== AI修改 开始 ==================== -->
+之前的 `replace_document()` 已经会按 `document_id` 删除整篇旧文档，但导入接口把带随机任务 ID 的临时路径传给了入口节点。例如同一个文件两次导入时，路径可能分别是：
+
+```text
+output/2026-08-22/task-a/Python.md
+output/2026-08-22/task-b/Python.md
+```
+
+临时目录每次不同，导致 `document_id` 每次不同，旧 chunk 就不会被删除，最终表现为同一文件重复累积。
+
+本次修复把临时路径和文档身份分开：
+
+- 本地目录导入：`source_id = 原始目录的规范绝对路径`，`source_path = 文件相对原始目录的 POSIX 路径`。
+- 浏览器上传：`source_id = browser-upload`，`source_path = 上传文件名`，并且保存文件前只保留文件名，避免路径片段进入保存位置。
+- `run_graph()` 将这些来源字段传入导入图，`NodeEntry` 再据此生成稳定的 `document_id`。
+- 同一来源目录下同一相对路径的文件再次导入，会命中同一个 `document_id`，Milvus 会先删除该文档的全部旧切片，再插入新切片。
+- 不同目录中同名文件仍然是不同文档；浏览器上传时同名文件按同一文档替换，这是无原始目录场景下最稳定、最容易理解的规则。
+- `file_hash` 仍保留为后续增量同步的元数据，但本次不把内容哈希加入 `document_id`，否则文件更新会产生旧版本孤儿数据。
+
+本轮修改文件：
+
+- `atguigu/tool/knowledge_chunk_store.py`：新增本地目录和浏览器上传的稳定来源身份构造函数。
+- `atguigu/web/api/app_service.py`：普通上传和本地目录导入都把稳定来源元数据传入 `run_graph()`。
+- `tests/test_import_metadata.py`：覆盖任务目录变化、文件名规范化和图状态元数据传递。
+
+注意：这次代码修复不会自动清理已经存在的历史重复 chunk。完成代码更新后，如果要清理旧数据，应先按来源或目录调用批量删除接口，再重新导入：
+
+```text
+DELETE /knowledge/sources/document?source_id=local-upload
+DELETE /knowledge/directories
+```
+
+第二个接口需要在请求体中传入 `source_path`，并可选传入 `source_type`。如果旧数据来自此前的随机临时路径，最稳妥的方式仍是按你确认过的旧集合/来源范围整体删除后重新导入，避免误删其他来源。
+
+<!-- ==================== AI修改 结束 ==================== -->
+
+## 二十、视觉模型配置字段兼容
+
+<!-- ==================== AI修改 开始 ==================== -->
+视觉模型节点使用的是 `ModelConfig.VL_BASE_URL`，而配置类此前只暴露了 `VL_MODEL_BASE_URL`，因此图片导入时会出现：
+
+```text
+AttributeError: type object 'ModelConfig' has no attribute 'VL_BASE_URL'
+```
+
+本次在 `ModelConfig` 中补充了标准字段 `VL_BASE_URL`，并让旧字段 `VL_MODEL_BASE_URL` 指向同一个值。这样当前视觉节点、旧节点和已有环境变量都可以继续工作，不需要修改 `.env` 中已有的地址配置。
+
+修改后需要重启后端进程，因为 `ModelConfig` 在模块导入时读取一次环境配置。已增加回归测试，确保 `VL_BASE_URL` 和 `VL_MODEL_BASE_URL` 始终一致。
+
+<!-- ==================== AI修改 结束 ==================== -->
+
+## 二十一、细节级代码瘦身
+
+<!-- ==================== AI修改 开始 ==================== -->
+本轮按“保留节点职责，只减少重复代码”的原则整理正式代码，没有拆分图片清洗、答案输出或导入节点，也没有修改原有业务注释。
+
+修改内容：
+
+- atguigu/config/prompt.py：删除前面已经被后一个定义覆盖的重复 ANSWER_PROMPT，只保留最终版本。
+- atguigu/config/config.py：新增语义统一的 MODEL_TEMPERATURE，内部文本和视觉调用都读取它；旧 .env 中的 VL_MODEL_TEMPERATURE 仍作为兜底，不要求用户立即改配置。
+- atguigu/query_process/nodes/node_search_embedding.py、atguigu/web/api/education_service.py：正文查询统一使用 milvus_chunks_collection，去掉运行时按教育/普通资料选择不同 chunks 集合的重复分支。旧配置别名仍保留给未迁移旧节点，不创建第二张表。
+- atguigu/tool/milvus_client_create.py：集中定义正文输出字段，并新增 build_item_name_expr()；检索节点和 HyDE 共用同一过滤逻辑，兼容字符串或列表主体，避免重复实现和逐字符过滤问题。
+- atguigu/import_process/nodes/node_md_img.py：OpenRouter 的 free-models-per-day、openrouter_free_tier_daily 和 daily reset 错误不再进入指数退避；每日免费额度耗尽无法靠等待恢复，瞬时 RPM/TPM 限流仍正常退避。
+- tests/test_model_provider_switch.py、tests/test_knowledge_chunk_store.py：补充每日额度和主体过滤边界测试。
+
+本轮没有操作 Milvus 数据，也没有把测试缓存或临时文件写回项目目录。
+<!-- ==================== AI修改 结束 ==================== -->
+
+## 二十二、一句话总结
 
 现在的掌柜智库已经从“能检索文本的 Demo”扩展成了一个包含普通资料、教育题库、图片知识、会话记忆、流式回答、导入状态和多路检索的完整项目。
 
@@ -880,4 +1108,6 @@ Obsidian Vault
 1. **改了 Milvus schema 或切分规则，要重新导入。**
 2. **图片修复后，旧资料必须重新导入，旧 chunk 不会自动补图片。**
 3. **后端用单进程合并服务启动，不要同时启动旧服务或 `--workers` 多进程。**
-4. **代码中的 AI 修改区域都有标记，遇到问题先看对应模块的日志和状态卡片。**
+4. **正文资料统一进入一张知识切片表，新增来源优先增加适配器和 `source_type`，不要新增 Collection。**
+5. **限流时前端显示“等待响应中”，退避结束恢复“处理中”，不要把正常等待当成状态丢失。**
+6. **代码中的 AI 修改区域都有标记，遇到问题先看对应模块的日志和状态卡片。**

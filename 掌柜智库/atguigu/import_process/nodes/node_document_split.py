@@ -107,7 +107,7 @@ class NodeDocumentSplit(NodeBase):
             parent_key: 父路径(去掉最后一级),用于判断两个区块是不是"兄弟"
             body:       该标题下的正文(不含标题行本身)
         """
-        code_pattern = r"(`{3,}|~{3,})"
+        code_pattern = r"(`{3,}|~{3,})" #至少出现3次
         # 捕获两组:第1组是#号个数(即标题层级),第2组是标题文字
         heading_pattern = r"^(#{1,6})\s+(.+)$"
 
@@ -125,10 +125,15 @@ class NodeDocumentSplit(NodeBase):
             if not body:
                 return
             if heading_stack:
+                # 解包遍历,因为heading_stack里面存放的是元组, _代表这个值我不需要可读性约定
+                # breadcrumb就是面包屑路径,如"第一章 安装 > 1.2 电源线"
                 breadcrumb = " > ".join(t for _, t in heading_stack)
                 # 兄弟判定键:父路径。len>1才有父,否则父路径为空串
+                # parent_key判断是否存在父路径,先把最后一个元素去掉,遍历剩余面包屑路径就是父路径
+                # 后续使用它来判断哪些区块属于同一个父标题,从而进行合并
                 parent_key = " > ".join(t for _, t in heading_stack[:-1]) if len(heading_stack) > 1 else ""
             else:
+                # 如果当前的文档没有标题层级,那么代码给它人为创建一个归属
                 # 第一个标题之前的内容(文档引言),用文件名当面包屑
                 breadcrumb = file_title
                 # 引言区单独一个parent_key,防止和一级标题区块误合并
@@ -155,16 +160,20 @@ class NodeDocumentSplit(NodeBase):
                 continue
 
             # 代码块内的#号不是标题
+            # 三元表达式,等价于 if is_in_block: heading_match = None else: heading_match = re.match(heading_pattern, line)
             heading_match = None if is_in_block else re.match(heading_pattern, line)
             if heading_match:
                 # 先收尾上一个区块
                 _flush()
                 body_lines = []
+                # 正则获取标题的层级就是#的数量
                 level = len(heading_match.group(1))
+                # 正则捕获标题内容
                 title_text = heading_match.group(2).strip()
                 # 核心树形逻辑:遇到N级标题,弹出栈中所有>=N级的标题再压入自己
                 # 例:栈为[1章,2节],来了一个2级标题->弹出2节压入新2节(同级替换)
                 #     来了一个3级标题->直接压入(成为2节的子标题)
+                # 栈列表存放(层级,标题内容)元组,当新标题入栈时弹出所有平级和更低级的标题
                 while heading_stack and heading_stack[-1][0] >= level:
                     heading_stack.pop()
                 heading_stack.append((level, title_text))
@@ -184,17 +193,27 @@ class NodeDocumentSplit(NodeBase):
         """
         merged = []
         for sec in sections:
+            #返回的是一个布尔值,只有当以下条件全部满足的时候才可以进行合并
             can_merge = (
                 merged
+                #条件1 当前区块的父路径和前一个的父路径相同
                 and sec["parent_key"] == merged[-1]["parent_key"]
+                #条件2 当前区块正文长度小于阈值
                 and len(sec["body"]) < self.MERGE_MIN_BODY
+                #条件3 当前区块不能是表格
                 and "<table" not in sec["body"]
+                #条件4 前一个也不能是表格 防止正文和表格混合
                 and "<table" not in merged[-1]["body"]
             )
+            #如果条件满足那么合并列表最后一个元素的正文就等于之前最后一个元素的正文+当前区域的正文
             if can_merge:
                 merged[-1]["body"] = (merged[-1]["body"] + "\n\n" + sec["body"]).strip()
             else:
                 # dict()浅拷贝,防止合并时改到原始解析结果
+                # 浅拷贝只复制外壳,不会复制里面的对象,因为这里只有一层字符串所以用浅拷贝就够了
+                # 使用浅拷贝后,最外层对象不是同一个地址,但是里面的嵌套对象,还是指向同一个地址
+                # 深拷贝会递归复制里面所有的对象,并开辟新的地址
+                # 此处为了不影响原始的sec对齐进行浅拷贝后进行合并,用深拷贝属于大炮打蚊子没必要
                 merged.append(dict(sec))
         return merged
 

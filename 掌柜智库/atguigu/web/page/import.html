@@ -156,6 +156,13 @@
             background: linear-gradient(135deg, #3b82f6, #2563eb);
         }
 
+        /* ==================== AI修改 开始 ====================
+           独立导入页也要能区分限流等待和普通处理中。
+           ==================== AI修改 结束 ==================== */
+        .status-waiting {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+        }
+
         .status-completed {
             background: linear-gradient(135deg, #10b981, #059669);
         }
@@ -662,7 +669,35 @@
                     logListEl.appendChild(errLog);
 
                 } else if (data.status === 'processing') {
+                    // ==================== AI修改 开始 ====================
+                    // 退避结束后后端恢复 processing，前端同步恢复处理中提示。
+                    statusBadge.textContent = '处理中';
+                    statusBadge.className = 'status-badge status-processing';
+                    // ==================== AI修改 结束 ====================
                     updateProgressUI(progressWrapper, calculatedPercentage);
+                } else if (data.status === 'queued') {
+                    // ==================== AI修改 开始 ====================
+                    // 线程池尚未开始执行时展示明确的排队状态。
+                    statusBadge.textContent = '排队中';
+                    statusBadge.className = 'status-badge status-processing';
+                    // ==================== AI修改 结束 ====================
+                } else if (data.status === 'waiting_response') {
+                    // ==================== AI修改 开始 ====================
+                    // 限流是可恢复状态，显示后端提供的重试信息，不判断空状态。
+                    const detail = data.status_detail || {};
+                    statusBadge.textContent = '等待响应中';
+                    statusBadge.className = 'status-badge status-waiting';
+                    const logListEl = itemEl.querySelector('.log-list');
+                    let waitLog = itemEl.querySelector('.rate-limit-wait-log');
+                    if (!waitLog) {
+                        waitLog = document.createElement('li');
+                        waitLog.className = 'rate-limit-wait-log log-running';
+                        logListEl.appendChild(waitLog);
+                    }
+                    const retryText = detail.retry_count ? `第${detail.retry_count}次重试` : '自动重试';
+                    const waitText = detail.retry_after ? `，约${detail.retry_after}秒后继续` : '';
+                    waitLog.textContent = `${detail.message || '模型暂时限流，等待响应中'}（${retryText}${waitText}）`;
+                    // ==================== AI修改 结束 ====================
                 }
             } catch (e) {
                 console.error('Polling error', e);

@@ -1,7 +1,7 @@
 import time
 from collections import defaultdict
 from queue import Queue
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 # ---------------------------
 # 内存态任务追踪（单进程）
@@ -17,6 +17,12 @@ _tasks_duration: Dict[str, Dict[str, float]] = defaultdict(dict)
 # key: task_id
 # value: status 字符串（如 processing/completed/failed）
 _tasks_status: Dict[str, str] = {}
+
+# ==================== AI修改 开始 ====================
+# 限流等待不是未知任务：单独保存状态详情，让前端知道正在等待第几次重试、
+# 预计等待多久以及当前是哪一个节点触发了限流。
+_tasks_status_detail: Dict[str, Dict[str, Any]] = defaultdict(dict)
+# ==================== AI修改 结束 ====================
 
 # key: task_id
 # value: 任务结果（例如 query 的 answer）
@@ -38,6 +44,12 @@ _tasks_error_msg: Dict[str, str] = {}
 TASK_STATUS_PROCESSING = "processing"
 TASK_STATUS_COMPLETED = "completed"
 TASK_STATUS_FAILED = "failed"
+# ==================== AI修改 开始 ====================
+# queued 表示任务已经登记但尚未拿到导入线程；waiting_response 表示任务仍在运行，
+# 只是因模型限流暂时等待下一次重试。两者都不应该被前端解释成空状态。
+TASK_STATUS_QUEUED = "queued"
+TASK_STATUS_WAITING_RESPONSE = "waiting_response"
+# ==================== AI修改 结束 ====================
 
 # 节点名 -> 中文名映射（用于前端展示）
 # 说明：这里的 key 应与 LangGraph 的 add_node("xxx", ...) 中的节点名一致。
@@ -149,7 +161,11 @@ def get_task_status(task_id: str ) -> str:
     return _tasks_status.get(task_id, "")
 
 
-def update_task_status(task_id: str, status_name: str) -> None:
+def update_task_status(
+        task_id: str,
+        status_name: str,
+        status_detail: Optional[Dict[str, Any]] = None,
+) -> None:
     """
     更新任务状态。
 
@@ -158,11 +174,39 @@ def update_task_status(task_id: str, status_name: str) -> None:
     - status_name: 状态名称（字符串）
     """
 
-    # 更新指定任务的总体运行状态（如 processing 等）
+    # ==================== AI修改 开始 ====================
+    # 更新指定任务的总体运行状态，并同步替换本次状态对应的详情。
+    # 普通 processing/completed/failed 状态没有详情时会清空旧的等待提示，
+    # 避免任务恢复处理后前端仍显示上一轮限流信息。
     _tasks_status[task_id] = status_name
+    _tasks_status_detail[task_id] = dict(status_detail or {})
+    # ==================== AI修改 结束 ====================
 
 
 # ==================== AI修改 开始 ====================
+def set_task_waiting_response(
+        task_id: str,
+        retry_count: int,
+        retry_after: int,
+        message: str,
+) -> None:
+    """记录一次可恢复的模型限流等待，供状态接口直接返回给前端。"""
+    update_task_status(
+        task_id,
+        TASK_STATUS_WAITING_RESPONSE,
+        {
+            "message": message,
+            "retry_count": retry_count,
+            "retry_after": retry_after,
+        },
+    )
+
+
+def get_task_status_detail(task_id: str) -> Dict[str, Any]:
+    """获取当前任务状态的附加详情，返回副本避免调用方修改全局状态。"""
+    return dict(_tasks_status_detail.get(task_id, {}))
+
+
 def set_task_error(task_id: str, error_msg: str) -> None:
     """记录任务的错误信息(失败时调用), 供 /status 返回给前端展示。"""
     _tasks_error_msg[task_id] = error_msg
@@ -191,6 +235,10 @@ def get_task_info(task_id: str) -> Dict[str, any]:
     """
     return {
         "status": get_task_status(task_id),
+        # ==================== AI修改 开始 ====================
+        # 将 waiting_response 的重试信息作为结构化字段返回，前端不再猜测空状态。
+        "status_detail": get_task_status_detail(task_id),
+        # ==================== AI修改 结束 ====================
         "running_list": get_running_task_list(task_id),
         "done_list": get_done_task_list(task_id),
         "durations": get_node_durations(task_id),

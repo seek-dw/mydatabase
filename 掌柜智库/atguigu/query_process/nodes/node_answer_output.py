@@ -195,9 +195,12 @@ class NodeAnswerOutput(NodeBase):
             self._llm = init_chat_model(
                 model = ModelConfig.LLM_MODEL_NAME,
                 model_provider="openai",
-                api_key = ModelConfig.MODA_API_KEY,
-                base_url = ModelConfig.VL_MODEL_BASE_URL,
-                temperature = ModelConfig.VL_MODEL_TEMPERATURE,
+                # ==================== AI修改 开始 ====================
+                # 答案生成是文本调用，使用当前平台的语言模型配置。
+                api_key = ModelConfig.LLM_API_KEY,
+                base_url = ModelConfig.LLM_BASE_URL,
+                # ==================== AI修改 结束 ====================
+                temperature = ModelConfig.MODEL_TEMPERATURE,
                 # ==================== AI修改 开始 ====================
                 # 使用统一配置，避免某个节点仍然偷偷使用较小的默认输出限制。
                 max_tokens = ModelConfig.LLM_MAX_TOKENS

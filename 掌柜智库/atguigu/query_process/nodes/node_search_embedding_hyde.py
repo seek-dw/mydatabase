@@ -1,6 +1,4 @@
 # atguigu/query_process/nodes/node_search_embedding_hyde.py
-import json
-
 from langchain.chat_models import init_chat_model
 
 from atguigu.config.config import ModelConfig, MilvusConfig
@@ -10,7 +8,16 @@ from atguigu.query_process.state import QueryGraphState
 from atguigu.tool.bgem3_create_tool import vectorize_texts
 from atguigu.tool.convert_to_json import convert_to_json
 from atguigu.tool.logger import logger
-from atguigu.tool.milvus_client_create import create_reqs, my_hybrid_search
+from atguigu.tool.milvus_client_create import (
+    # ==================== AI修改 开始 ====================
+    CHUNK_OUTPUT_FIELDS,
+    build_item_name_expr,
+    # ==================== AI修改 结束 ====================
+    create_reqs,
+    get_milvus_client,
+    my_hybrid_search,
+    select_existing_output_fields,
+)
 
 
 class NodeSearchEmbeddingHyde(NodeBase):
@@ -59,9 +66,12 @@ class NodeSearchEmbeddingHyde(NodeBase):
             self._llm = init_chat_model(
                 model=ModelConfig.LLM_MODEL_NAME,
                 model_provider="openai",
-                api_key=ModelConfig.MODA_API_KEY,
-                base_url=ModelConfig.VL_MODEL_BASE_URL,
-                temperature=ModelConfig.VL_MODEL_TEMPERATURE
+                # ==================== AI修改 开始 ====================
+                # HyDE 假设文档生成是文本调用，跟随当前平台的语言模型配置。
+                api_key=ModelConfig.LLM_API_KEY,
+                base_url=ModelConfig.LLM_BASE_URL,
+                # ==================== AI修改 结束 ====================
+                temperature=ModelConfig.MODEL_TEMPERATURE
             )
         llm = self._llm
         # ==================== AI修改 结束 ====================
@@ -92,11 +102,9 @@ class NodeSearchEmbeddingHyde(NodeBase):
         # expr组合构建(与node_search_embedding保持一致,item_names可能为空)
         expr_conditions = []
         if item_names:
-            item_names = [
-                item.replace("\\", "\\\\").replace("'", "\'").replace('"', "\"")
-                for item in item_names
-            ]
-            expr_conditions.append(f"item_name in {json.dumps(item_names)}")
+            item_expr = build_item_name_expr(item_names)
+            if item_expr:
+                expr_conditions.append(item_expr)
         expr = " and ".join(expr_conditions) if expr_conditions else None
         # ==================== AI修改 结束 ====================
         reqs = create_reqs(
@@ -122,8 +130,9 @@ class NodeSearchEmbeddingHyde(NodeBase):
             # ==================== AI修改 开始 ====================
             # 普通文档的 HyDE 仍查询旧 chunks collection；教育意图在上方已跳过 HyDE，
             # 因此这里只请求普通表稳定存在的基础字段，兼容旧 collection schema。
-            output_fields=["id", "title", "file_title", "content", "item_name",
-                           "content_type", "source_name", "code", "q_type"],
+            output_fields=select_existing_output_fields(
+                get_milvus_client(), collection_name, CHUNK_OUTPUT_FIELDS
+            ),
             # ==================== AI修改 结束 ====================
             # ==================== AI修改 开始 ====================
             # limit 10 -> 20 (提升召回):与node_search_embedding保持一致,

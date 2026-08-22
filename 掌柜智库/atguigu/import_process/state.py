@@ -21,6 +21,15 @@ class ImportGraphState(TypedDict):
     local_dir: str  # 当前工作目录或输出目录
     local_file_path: str    # 原始输入文件路径
     file_title: str # 文件标题（文件名去后缀）
+    # ==================== AI修改 开始 ====================
+    # 统一知识表的文档级身份；同一篇文档产生的所有 chunk 共用 document_id。
+    document_id: str
+    source_type: str  # document / education / obsidian / 后续扩展来源
+    source_id: str  # 来源实例，例如某个 Vault、项目或数据源
+    source_path: str  # 来源内部的稳定路径
+    source_name: str  # 来源显示名称
+    file_hash: str  # 可选内容哈希，用于后续增量导入
+    # ==================== AI修改 结束 ====================
     pdf_path: str   # PDF 文件路径 (如果输入是PDF)
     md_path: str    # Markdown 文件路径 (转换后或直接输入的)
 

@@ -1,8 +1,10 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import Mapping
 
 from dotenv import load_dotenv
+# 扫描当前目录寻找.env文件.解析文件中的key=value,将这些键值对写入os.environ字典中
 load_dotenv(override=True)
 
 # ==================== AI修改 开始 ====================
@@ -20,25 +22,95 @@ class MinerUConfig:
     """
     MINERU_API_KEY = os.getenv("MINERU_API_KEY")
 
+# ==================== AI修改 开始 ====================
+# 语言模型和视觉模型共享“当前平台”选择，但保留各自的模型、地址和 key 字段。
+# 这样只改 MODEL_PROVIDER 就能在魔搭/OpenRouter 间切换，业务节点不再绑定某个平台。
+def resolve_model_profiles(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """根据环境变量解析当前语言模型和视觉模型的有效配置。"""
+    # env存在用env不存在用环境变量
+    values = os.environ if env is None else env
+    # 在env或者环境变量中读取"MODEL_PROVIDER"开关,默认值设为魔搭
+    provider = (values.get("MODEL_PROVIDER") or "modelscope").strip().lower()
+    # 给魔搭的值进行一些其他写法的兼容
+    provider = {"model_scope": "modelscope", "model-scope": "modelscope"}.get(
+        provider, provider
+    )
+    if provider not in {"modelscope", "openrouter"}:
+        raise ValueError(
+            "MODEL_PROVIDER 只能是 modelscope 或 openrouter，"
+            f"当前值为: {provider}"
+        )
+    # 辅助函数根据env里面的键名获取值
+    def value(name: str, default: str = "") -> str:
+        return (values.get(name) or default).strip()
+    # 魔搭的配置
+    modelscope = {
+        "base_url": value(
+            "MODELSCOPE_BASE_URL",
+            #兼容默认值
+            value("VL_MODEL_BASE_URL", "https://api-inference.modelscope.cn/v1"),
+        ),
+        "api_key": value("MODELSCOPE_API_KEY", value("MODA_API_KEY")),
+        "llm_model": value("MODELSCOPE_LLM_MODEL", value("LLM_MODEL_NAME")),
+        "vl_model": value("MODELSCOPE_VL_MODEL", value("VL_MODEL_NAME")),
+    }
+    # openrouter的配置
+    openrouter = {
+        "base_url": value("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        "api_key": value("OPENROUTER_API_KEY"),
+        # 用户指定的 OpenRouter 模型同时承担文本和图片输入。
+        "llm_model": value(
+            "OPENROUTER_LLM_MODEL", "dots-studio/dots-3-note-preview:free"
+        ),
+        "vl_model": value(
+            "OPENROUTER_VL_MODEL", "dots-studio/dots-3-note-preview:free"
+        ),
+    }
+    selected = modelscope if provider == "modelscope" else openrouter
+    return {
+        "provider": provider,
+        "llm_model": selected["llm_model"],
+        "llm_base_url": selected["base_url"],
+        "llm_api_key": selected["api_key"],
+        "vl_model": selected["vl_model"],
+        "vl_base_url": selected["base_url"],
+        "vl_api_key": selected["api_key"],
+    }
+# ==================== AI修改 结束 ====================
+
+
 class ModelConfig:
     """
     MODEL_VL_AND_LLM 配置类
     """
     # 重排序模型api -> openrouter
     OPENROUTER_API_KEY= os.getenv("OPENROUTER_API_KEY")
-    #视觉模型url
-    VL_MODEL_BASE_URL = os.getenv("VL_MODEL_BASE_URL")
-    #视觉模型名字
-    VL_MODEL_NAME = os.getenv("VL_MODEL_NAME")
-    #视觉模型温度
-    VL_MODEL_TEMPERATURE = os.getenv("VL_MODEL_TEMPERATURE")
-    #语言模型名字
-    LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME")
-    #语言及视觉模型api
-    MODA_API_KEY = os.getenv("MODA_API_KEY")
+    # ==================== AI修改 开始 ====================
+    # 读取一次当前平台配置；修改 .env 后重启服务即可切换，避免运行中混用两个平台。
+    # 不传参 env为None 自动读取os.environ
+    _ACTIVE_MODEL_PROFILE = resolve_model_profiles()
+    MODEL_PROVIDER = _ACTIVE_MODEL_PROFILE["provider"]
 
+    # 文本调用(答案、主体识别、HyDE、主体确认)使用 LLM_* 配置。
+    LLM_BASE_URL = _ACTIVE_MODEL_PROFILE["llm_base_url"]
+    LLM_API_KEY = _ACTIVE_MODEL_PROFILE["llm_api_key"]
+    LLM_MODEL_NAME = _ACTIVE_MODEL_PROFILE["llm_model"]
+
+    # 视觉调用(图片摘要)使用 VL_* 配置；当前两平台共用同一地址和 key，字段仍分开保留。
+    VL_BASE_URL = _ACTIVE_MODEL_PROFILE["vl_base_url"]
+    # 兼容旧节点使用的完整字段名；视觉节点统一读取 VL_BASE_URL。
+    VL_MODEL_BASE_URL = VL_BASE_URL
+    VL_API_KEY = _ACTIVE_MODEL_PROFILE["vl_api_key"]
+    VL_MODEL_NAME = _ACTIVE_MODEL_PROFILE["vl_model"]
+
+    # 兼容尚未迁移的旧节点；活动节点会直接使用上面的 LLM_*/VL_* 字段。
+    MODA_API_KEY = LLM_API_KEY
+    # ==================== AI修改 结束 ====================
     # ==================== AI修改 开始 ====================
-    # ==================== AI修改 开始 ====================
+    #视觉模型温度
+    MODEL_TEMPERATURE = os.getenv("MODEL_TEMPERATURE") or os.getenv(
+        "VL_MODEL_TEMPERATURE"
+    )
     # 回答输出预算调整为6144 token：保留详细回答空间，同时避免8192导致模型
     # 在已经回答完整后继续无止境扩写。真正的自然收束还由答案节点的软上限控制。
     # 下面参数均可在根目录 .env 中覆盖，方便不同模型按上下文窗口调节。
@@ -101,18 +173,14 @@ class MilvusConfig:
     """
     #创建客户端url地址
     milvus_url = os.getenv("MILVUS_URL")
-    #主体识别集合表
-    milvus_item_collection = os.getenv("ITEM_COLLECTION")
-    #chunks集合表
-    milvus_chunks_collection = os.getenv("CHUNKS_COLLECTION")
+    # 主体识别集合表仍单独保留，因为它和正文切片的检索用途不同。
+    milvus_item_collection = os.getenv("ITEM_COLLECTION") or "item_collection"
     # ==================== AI修改 开始 ====================
-    # 教育数据单独使用一张新表，避免旧 chunks_db schema 没有教育字段时影响普通文档。
-    # 未配置时自动使用“普通表名_education”，首次教育导入会自动创建。
-    education_chunks_collection = os.getenv(
-        "EDUCATION_CHUNKS_COLLECTION",
-        f"{milvus_chunks_collection}_education",
-    )
-    # ==================== AI修改 结束 ====================
+    # 所有正文来源统一写入一张知识切片表；旧环境变量仍可指定表名，
+    # 但普通资料和教育资料不再根据来源创建不同的 chunks collection。
+    milvus_chunks_collection = os.getenv("CHUNKS_COLLECTION") or "knowledge_chunks"
+    # 保留旧配置属性作为代码兼容别名，实际值与统一正文表相同，不会创建第二张表。
+    education_chunks_collection = milvus_chunks_collection
 
 class MongoConfig:
     """

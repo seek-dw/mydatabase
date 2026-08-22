@@ -1664,6 +1664,15 @@
             border-color: var(--accent-border);
         }
 
+        /* ==================== AI修改 开始 ====================
+           限流等待使用独立的琥珀色状态，和普通处理中、最终失败区分开。
+           ==================== AI修改 结束 ==================== */
+        .status-waiting {
+            background: rgba(217, 119, 6, 0.09);
+            color: #b45309;
+            border-color: rgba(217, 119, 6, 0.28);
+        }
+
         .status-completed {
             background: rgba(5, 150, 105, 0.09);
             color: var(--ok);
@@ -3321,9 +3330,8 @@
             const progressWrapper = itemEl.querySelector('.progress-wrapper');
             const logDetails = itemEl.querySelector('.log-details');
             let stopped = false;
-            let emptyCount = 0;  // 连续遇到空状态(未知任务)的次数
             // ==================== AI修改 开始 ====================
-            // 网络错误单独计数，和“状态为空”区分，便于识别后端进程崩溃。
+            // 网络错误单独计数，便于识别真正的后端连接中断。
             let consecutiveNetworkErrors = 0;
             // ==================== AI修改 结束 ====================
 
@@ -3374,24 +3382,37 @@
                         if (logDetails) logDetails.open = true;
                         // ==================== AI修改 结束 ====================
                     } else if (data.status === 'processing') {
-                        updateProgressUI(progressWrapper, calculatedPercentage);
-                    } else if (data.status === '') {
                         // ==================== AI修改 开始 ====================
-                        // 导入/上传任务未检测到状态(status为空), 通常是服务未重启(跑旧进程)
-                        // 或多worker部署导致内存任务字典跨进程不共享。给约60秒宽限(40×1.5s),
-                        // 之后显式提示, 避免卡片永远停在"排队中"静默假死, 帮用户定位。
+                        // 限流退避结束后后端会回到 processing，前端同步恢复处理中提示。
+                        statusBadge.textContent = '处理中';
+                        statusBadge.className = 'status-badge status-processing';
+                        const retryLog = itemEl.querySelector('.rate-limit-wait-log');
+                        if (retryLog) retryLog.textContent = '限流等待结束，正在重试...';
                         // ==================== AI修改 结束 ====================
-                        emptyCount++;
-                        if (emptyCount > 40) {
-                            stopped = true;
-                            clearInterval(interval);
-                            statusBadge.textContent = '状态丢失';
-                            statusBadge.className = 'status-badge status-error';
-                            const warnLog = document.createElement('li');
-                            warnLog.textContent = '⚠️ 未检测到任务状态：可能服务未重启或多进程部署，请以单进程方式重启服务';
-                            warnLog.style.color = '#d97706';
-                            logListEl.appendChild(warnLog);
+                        updateProgressUI(progressWrapper, calculatedPercentage);
+                    } else if (data.status === 'queued') {
+                        // ==================== AI修改 开始 ====================
+                        // 后端已经登记任务但线程池尚未开始执行，明确展示排队状态。
+                        statusBadge.textContent = '排队中';
+                        statusBadge.className = 'status-badge status-processing';
+                        // ==================== AI修改 结束 ====================
+                    } else if (data.status === 'waiting_response') {
+                        // ==================== AI修改 开始 ====================
+                        // 限流是可恢复状态，直接展示后端提供的重试次数和等待时间。
+                        const detail = data.status_detail || {};
+                        statusBadge.textContent = '等待响应中';
+                        statusBadge.className = 'status-badge status-waiting';
+                        const logListEl = itemEl.querySelector('.log-list');
+                        let waitLog = itemEl.querySelector('.rate-limit-wait-log');
+                        if (!waitLog) {
+                            waitLog = document.createElement('li');
+                            waitLog.className = 'rate-limit-wait-log log-running';
+                            logListEl.appendChild(waitLog);
                         }
+                        const retryText = detail.retry_count ? `第${detail.retry_count}次重试` : '自动重试';
+                        const waitText = detail.retry_after ? `，约${detail.retry_after}秒后继续` : '';
+                        waitLog.textContent = `${detail.message || '模型暂时限流，等待响应中'}（${retryText}${waitText}）`;
+                        // ==================== AI修改 结束 ====================
                     }
                 } catch (e) {
                     console.error('Polling error', e);
